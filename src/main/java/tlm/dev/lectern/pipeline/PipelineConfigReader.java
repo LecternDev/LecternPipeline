@@ -16,11 +16,13 @@ public final class PipelineConfigReader {
     static final String DEFAULT_MANIFEST_URL = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
     static final String WORKBENCH_FOLDER_NAME = "LecternWorkbench";
     static final String GIT_EXECUTABLE = "git";
-    static final String USAGE = "usage: lectern-pipeline list | fetch <id> | extract <id> | normalize <id>"
+    static final String DEFAULT_HISTORY_START = "1.20.4";
+    static final String USAGE = "usage: lectern-pipeline list | history | fetch <id> | extract <id> | normalize <id>"
             + " | publish <id> --data <git repository> [--diff-command <script>]"
-            + " [--manifest-url=<url>] [--workbench=<folder>] [--java=<executable>]";
+            + " [--manifest-url=<url>] [--workbench=<folder>] [--java=<executable>] [--history-start=<id>]";
 
     private static final String LIST_COMMAND = "list";
+    private static final String HISTORY_COMMAND = "history";
     private static final String FETCH_COMMAND = "fetch";
     private static final String EXTRACT_COMMAND = "extract";
     private static final String NORMALIZE_COMMAND = "normalize";
@@ -30,7 +32,8 @@ public final class PipelineConfigReader {
     private static final String JAVA_OPTION = "--java";
     private static final String DATA_OPTION = "--data";
     private static final String DIFF_COMMAND_OPTION = "--diff-command";
-    private static final List<String> OPTIONS = List.of(MANIFEST_URL_OPTION, WORKBENCH_OPTION, JAVA_OPTION, DATA_OPTION, DIFF_COMMAND_OPTION);
+    private static final String HISTORY_START_OPTION = "--history-start";
+    private static final List<String> OPTIONS = List.of(MANIFEST_URL_OPTION, WORKBENCH_OPTION, JAVA_OPTION, DATA_OPTION, DIFF_COMMAND_OPTION, HISTORY_START_OPTION);
     private static final List<String> PUBLISH_ONLY_OPTIONS = List.of(DATA_OPTION, DIFF_COMMAND_OPTION);
     private static final List<String> WEB_SCHEMES = List.of("http", "https");
     private static final List<String> SCRIPT_EXTENSIONS = List.of(".bat", ".cmd", ".exe");
@@ -47,10 +50,10 @@ public final class PipelineConfigReader {
             throw new UsageException(USAGE);
         }
         String word = args[0];
-        if (LIST_COMMAND.equals(word)) {
+        if (LIST_COMMAND.equals(word) || HISTORY_COMMAND.equals(word)) {
             Map<String, String> options = options(args, 1);
             rejectPublishOnlyOptions(word, options);
-            return config(new Command.ListVersions(), options, Optional.empty());
+            return config(LIST_COMMAND.equals(word) ? new Command.ListVersions() : new Command.History(), options, Optional.empty());
         }
         if (!List.of(FETCH_COMMAND, EXTRACT_COMMAND, NORMALIZE_COMMAND, PUBLISH_COMMAND).contains(word)) {
             throw new UsageException("Unknown command '" + word + "'\n" + USAGE);
@@ -76,6 +79,7 @@ public final class PipelineConfigReader {
                 options.containsKey(JAVA_OPTION) ? executable(options.get(JAVA_OPTION)) : environment.javaHome().resolve("bin").resolve("java"),
                 Path.of(GIT_EXECUTABLE),
                 diffCommand,
+                historyStart(options),
                 environment.tempDirectory());
     }
 
@@ -84,6 +88,15 @@ public final class PipelineConfigReader {
             if (options.containsKey(option)) {
                 throw new UsageException("The option " + option + " is only for the command publish, not for " + word + "\n" + USAGE);
             }
+        }
+    }
+
+    private static VersionId historyStart(Map<String, String> options) {
+        String text = options.getOrDefault(HISTORY_START_OPTION, DEFAULT_HISTORY_START);
+        try {
+            return new VersionId(text);
+        } catch (IllegalArgumentException exception) {
+            throw new UsageException("The first version of the history is not a version id: " + exception.getMessage() + "\n" + USAGE);
         }
     }
 

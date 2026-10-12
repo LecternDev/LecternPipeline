@@ -50,6 +50,10 @@ final class VersionPreparer {
         this.out = out;
     }
 
+    TrackedVersion findVersion(VersionId id) {
+        return lookup.find(id);
+    }
+
     LookedUpVersion lookup(VersionId id) {
         return lookup.findWithBase(id);
     }

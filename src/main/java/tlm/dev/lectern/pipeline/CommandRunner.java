@@ -31,6 +31,8 @@ import tlm.dev.lectern.pipeline.http.HttpDownloadClient;
 import tlm.dev.lectern.pipeline.json.CanonicalJsonWriter;
 import tlm.dev.lectern.pipeline.json.JsonTextReader;
 import tlm.dev.lectern.pipeline.manifest.ExcludedVersionsReader;
+import tlm.dev.lectern.pipeline.manifest.HistoryRenderer;
+import tlm.dev.lectern.pipeline.manifest.HistoryService;
 import tlm.dev.lectern.pipeline.manifest.ManifestClient;
 import tlm.dev.lectern.pipeline.manifest.ManifestReader;
 import tlm.dev.lectern.pipeline.manifest.RecentVersionsService;
@@ -80,6 +82,7 @@ final class CommandRunner {
     void run() {
         switch (config.command()) {
             case Command.ListVersions _ -> list();
+            case Command.History _ -> history();
             case Command.Fetch fetch -> fetch(fetch.id());
             case Command.Extract extract -> extract(extract.id());
             case Command.Normalize normalize -> normalize(normalize.id());
@@ -92,10 +95,15 @@ final class CommandRunner {
         out.print(new VersionListRenderer().render(service.recent(LIST_SIZE)));
     }
 
+    private void history() {
+        HistoryService service = new HistoryService(manifestClient(), new ManifestReader(new JsonTextReader()), scope());
+        out.print(new HistoryRenderer().render(service.history()));
+    }
+
     private void fetch(VersionId id) {
         requireWorkbench();
         VersionPreparer preparer = preparer();
-        out.print(new FetchReportRenderer().render(preparer.fetchJar(preparer.lookup(id).version())));
+        out.print(new FetchReportRenderer().render(preparer.fetchJar(preparer.findVersion(id))));
     }
 
     private void extract(VersionId id) {
@@ -103,7 +111,7 @@ final class CommandRunner {
         ExtractionService extraction = extractionService();
         extraction.requireFreshOutput(id);
         VersionPreparer preparer = preparer(extraction);
-        FetchedJar jar = preparer.fetchJar(preparer.lookup(id).version());
+        FetchedJar jar = preparer.fetchJar(preparer.findVersion(id));
         out.print(new FetchReportRenderer().render(jar));
         ExtractionResult result = extraction.extract(id, jar.jar());
         out.print(new ExtractionReportRenderer().render(result));
@@ -184,8 +192,8 @@ final class CommandRunner {
         }
     }
 
-    private static VersionScope scope() {
-        return new VersionScope(excludedVersions());
+    private VersionScope scope() {
+        return new VersionScope(excludedVersions(), Optional.of(config.historyStart()));
     }
 
     private static Set<VersionId> excludedVersions() {

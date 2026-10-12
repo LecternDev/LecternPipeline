@@ -155,7 +155,7 @@ class PipelineConfigReaderTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"list", "fetch 26.3", "extract 26.3", "normalize 26.3"})
+    @ValueSource(strings = {"list", "history", "fetch 26.3", "extract 26.3", "normalize 26.3"})
     void dataOptionOnAnotherCommandIsAUsageError(String command) {
         String[] words = (command + " --data=x").split(" ");
         UsageException failure = assertThrows(UsageException.class, () -> reader.read(words));
@@ -163,7 +163,7 @@ class PipelineConfigReaderTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"list", "fetch 26.3", "extract 26.3", "normalize 26.3"})
+    @ValueSource(strings = {"list", "history", "fetch 26.3", "extract 26.3", "normalize 26.3"})
     void diffCommandOptionOnAnotherCommandIsAUsageError(String command) {
         String[] words = (command + " --diff-command=x").split(" ");
         UsageException failure = assertThrows(UsageException.class, () -> reader.read(words));
@@ -226,7 +226,7 @@ class PipelineConfigReaderTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"--manifest-url", "--workbench", "--java", "--data", "--diff-command"})
+    @ValueSource(strings = {"--manifest-url", "--workbench", "--java", "--data", "--diff-command", "--history-start"})
     void optionWithoutAValueIsAUsageErrorSayingSo(String option) {
         UsageException failure = assertThrows(UsageException.class, () -> reader.read(new String[] {"publish", "26.3", option}));
         assertTrue(failure.getMessage().contains("needs a value"), failure.getMessage());
@@ -243,5 +243,46 @@ class PipelineConfigReaderTest {
         assertEquals(ENVIRONMENT.currentDirectory().resolve("bench"), config.workbench());
         assertEquals(Path.of("java"), config.java());
         assertEquals(URI.create("http://127.0.0.1:8080/m"), config.manifestUrl());
+    }
+
+    @Test
+    void historyTakesNoIdAndUsesTheDefaultStart() {
+        PipelineConfig config = reader.read(new String[] {"history"});
+        assertInstanceOf(Command.History.class, config.command());
+        assertEquals(new VersionId("1.20.4"), config.historyStart());
+    }
+
+    @Test
+    void defaultStartOfTheHistoryIs1204() {
+        assertEquals("1.20.4", PipelineConfigReader.DEFAULT_HISTORY_START);
+        assertEquals(new VersionId("1.20.4"), reader.read(new String[] {"list"}).historyStart());
+        assertEquals(new VersionId("1.20.4"), reader.read(new String[] {"publish", "26.3", "--data=x"}).historyStart());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"list", "history", "fetch 26.3", "extract 26.3", "normalize 26.3", "publish 26.3 --data=x"})
+    void startOfTheHistoryCanBeGivenToEveryCommandWithEqualsOrASpace(String command) {
+        String[] withEquals = (command + " --history-start=1.21").split(" ");
+        String[] withSpace = (command + " --history-start 1.21").split(" ");
+        assertEquals(new VersionId("1.21"), reader.read(withEquals).historyStart());
+        assertEquals(new VersionId("1.21"), reader.read(withSpace).historyStart());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"", "a/b", " 1.21", "..", "back\\slash"})
+    void startOfTheHistoryThatCannotBeAVersionIdIsAUsageError(String value) {
+        UsageException failure = assertThrows(UsageException.class, () -> reader.read(new String[] {"history", "--history-start=" + value}));
+        assertTrue(failure.getMessage().contains("first version of the history"), failure.getMessage());
+    }
+
+    @Test
+    void historyStartGivenTwiceIsAUsageError() {
+        assertThrows(UsageException.class, () -> reader.read(new String[] {"history", "--history-start=1.21", "--history-start=1.20"}));
+    }
+
+    @Test
+    void usageNamesTheHistoryCommandAndTheOption() {
+        assertTrue(PipelineConfigReader.USAGE.contains("history"), PipelineConfigReader.USAGE);
+        assertTrue(PipelineConfigReader.USAGE.contains("--history-start=<id>"), PipelineConfigReader.USAGE);
     }
 }

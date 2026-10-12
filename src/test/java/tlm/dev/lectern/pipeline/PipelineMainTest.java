@@ -105,7 +105,7 @@ class PipelineMainTest {
     }
 
     private String[] arguments(String... leading) {
-        return Stream.concat(Stream.of(leading), Stream.of("--workbench=" + workbench, "--manifest-url=" + server.uri("/manifest"))).toArray(String[]::new);
+        return Stream.concat(Stream.of(leading), Stream.of("--workbench=" + workbench, "--manifest-url=" + server.uri("/manifest"), "--history-start=98.9")).toArray(String[]::new);
     }
 
     private List<String> filesIn(Path folder) throws IOException {
@@ -127,7 +127,7 @@ class PipelineMainTest {
                 ManifestFixtures.entryJson("1.14 Pre-Release 1", "snapshot", ManifestFixtures.hoursAfterOrigin(50)),
                 ManifestFixtures.entryJson("98.9", "release", ManifestFixtures.hoursAfterOrigin(10)));
         publishManifest(entries.toArray(new String[0]));
-        int exit = run("list", "--manifest-url=" + server.uri("/manifest"));
+        int exit = run("list", "--manifest-url=" + server.uri("/manifest"), "--history-start=98.9");
         assertEquals("", err());
         assertEquals(0, exit);
         assertEquals("""
@@ -137,6 +137,68 @@ class PipelineMainTest {
                 99.1-rc-1        release-candidate  2090-01-05T04:00:00Z  98.9       -
                 98.9             release            2090-01-01T10:00:00Z  -          -
                 """, out());
+    }
+
+    @Test
+    void historyPrintsEveryVersionFromTheStartOldestFirstWithItsBasesAndTheTotals() {
+        publishManifest(
+                ManifestFixtures.entryJson("99.2-snapshot-1", "snapshot", ManifestFixtures.hoursAfterOrigin(300)),
+                ManifestFixtures.entryJson("99.1", "release", ManifestFixtures.hoursAfterOrigin(200)),
+                ManifestFixtures.entryJson("99.1-rc-1", "snapshot", ManifestFixtures.hoursAfterOrigin(100)),
+                ManifestFixtures.entryJson("98.9", "release", ManifestFixtures.hoursAfterOrigin(10)),
+                ManifestFixtures.entryJson("98.8", "release", ManifestFixtures.hoursAfterOrigin(5)));
+        int exit = run("history", "--manifest-url=" + server.uri("/manifest"), "--history-start=98.9");
+        assertEquals("", err());
+        assertEquals(0, exit);
+        assertEquals("""
+                ID               KIND               RELEASED              BASE       RELEASE BASE
+                98.9             release            2090-01-01T10:00:00Z  -          -
+                99.1-rc-1        release-candidate  2090-01-05T04:00:00Z  98.9       -
+                99.1             release            2090-01-09T08:00:00Z  99.1-rc-1  98.9
+                99.2-snapshot-1  snapshot           2090-01-13T12:00:00Z  99.1       -
+
+                totals
+                  versions             4
+                  old naming           0
+                  new naming           4
+                  release              2
+                  release-candidate    1
+                  pre-release          0
+                  snapshot             1
+                  with a step base     3
+                  with a release base  1
+                """, out());
+    }
+
+    @Test
+    void historyNeedsNeitherTheWorkbenchNorAnyWrite() {
+        publishManifest(ManifestFixtures.entryJson("99.1", "release", ManifestFixtures.hoursAfterOrigin(200)));
+        int exit = run("history", "--manifest-url=" + server.uri("/manifest"), "--history-start=99.1", "--workbench=" + base.resolve("absent"));
+        assertEquals(0, exit);
+        assertFalse(Files.exists(base.resolve("absent")));
+    }
+
+    @Test
+    void historyWhoseDefaultStartIsNotInTheManifestExitsWithOneAndNamesTheStart() {
+        publishManifest(ManifestFixtures.entryJson("99.1", "release", ManifestFixtures.hoursAfterOrigin(200)));
+        assertEquals(1, run("history", "--manifest-url=" + server.uri("/manifest")));
+        assertEquals("", out());
+        assertTrue(err().startsWith("lectern-pipeline: "), err());
+        assertTrue(err().contains("'1.20.4'"), err());
+        assertTrue(err().contains("--history-start"), err());
+    }
+
+    @Test
+    void listAlsoNeedsTheStartOfTheHistoryToShowBases() {
+        publishManifest(ManifestFixtures.entryJson("99.1", "release", ManifestFixtures.hoursAfterOrigin(200)));
+        assertEquals(1, run("list", "--manifest-url=" + server.uri("/manifest")));
+        assertTrue(err().contains("'1.20.4'"), err());
+    }
+
+    @Test
+    void fetchDoesNotNeedTheStartOfTheHistory() {
+        publishManifest(releaseEntry("99.1", bundlerJar, FetchFixtures.sha1Hex(bundlerJar), 10));
+        assertEquals(0, run("fetch", "99.1", "--workbench=" + workbench, "--manifest-url=" + server.uri("/manifest")));
     }
 
     @Test
@@ -355,7 +417,7 @@ class PipelineMainTest {
 
     private String[] publishArguments(String id, Path repository) {
         return new String[] {"publish", id, "--workbench=" + workbench, "--manifest-url=" + server.uri("/manifest"), "--data=" + repository,
-                "--diff-command=" + diffScript};
+                "--diff-command=" + diffScript, "--history-start=98.9"};
     }
 
     private Path dataRepository() {
@@ -528,7 +590,7 @@ class PipelineMainTest {
         prepareNormalizedDemoLine();
         Path repository = dataRepository();
         environment = new Environment(environment.currentDirectory(), environment.javaHome(), environment.tempDirectory(), false, Optional.of(diffScript.toString()));
-        int exit = run(routing(PipelineMainTest::echoingDiff), "publish", "99.1", "--workbench=" + workbench, "--manifest-url=" + server.uri("/manifest"), "--data=" + repository);
+        int exit = run(routing(PipelineMainTest::echoingDiff), "publish", "99.1", "--history-start=98.9", "--workbench=" + workbench, "--manifest-url=" + server.uri("/manifest"), "--data=" + repository);
         assertEquals("", err());
         assertEquals(0, exit);
         assertTrue(Files.isRegularFile(repository.resolve("diffs/99.1/step.json")));
@@ -539,7 +601,7 @@ class PipelineMainTest {
         publishDemoReleaseWithItsCandidateAndPreviousRelease();
         Path repository = dataRepository();
         String head = GitFixtures.head(repository);
-        int exit = run(routing(PipelineMainTest::echoingDiff), "publish", "99.1", "--workbench=" + workbench, "--manifest-url=" + server.uri("/manifest"), "--data=" + repository);
+        int exit = run(routing(PipelineMainTest::echoingDiff), "publish", "99.1", "--history-start=98.9", "--workbench=" + workbench, "--manifest-url=" + server.uri("/manifest"), "--data=" + repository);
         assertEquals(2, exit);
         assertTrue(err().contains("Publishing 99.1 needs the diff command"), err());
         assertTrue(err().contains("--diff-command"), err());
@@ -558,7 +620,7 @@ class PipelineMainTest {
         publishManifest(ManifestFixtures.entryJson("1.21.11", "release", ManifestFixtures.hoursAfterOrigin(10)));
         int exit = run(routing(call -> {
             throw new AssertionError("the diff command must not run");
-        }), "publish", "1.21.11", "--workbench=" + workbench, "--manifest-url=" + server.uri("/manifest"), "--data=" + repository);
+        }), "publish", "1.21.11", "--history-start=1.21.11", "--workbench=" + workbench, "--manifest-url=" + server.uri("/manifest"), "--data=" + repository);
         assertEquals("", err());
         assertEquals(0, exit);
         assertTrue(out().contains("  diffs       none\n"), out());
@@ -611,7 +673,7 @@ class PipelineMainTest {
         publishDemoReleaseWithItsCandidateAndPreviousRelease();
         Path repository = dataRepository();
         String head = GitFixtures.head(repository);
-        int exit = run(routing(PipelineMainTest::echoingDiff), "publish", "99.1", "--workbench=" + workbench, "--manifest-url=" + server.uri("/manifest"),
+        int exit = run(routing(PipelineMainTest::echoingDiff), "publish", "99.1", "--history-start=98.9", "--workbench=" + workbench, "--manifest-url=" + server.uri("/manifest"),
                 "--data=" + repository, "--diff-command=" + base.resolve("tools/absent"));
         assertEquals(1, exit);
         assertTrue(err().contains("does not exist"), err());

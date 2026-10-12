@@ -9,6 +9,9 @@ public sealed interface Command {
     record ListVersions() implements Command {
     }
 
+    record History() implements Command {
+    }
+
     record Fetch(VersionId id) implements Command {
 
         public Fetch {
