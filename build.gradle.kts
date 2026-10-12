@@ -35,4 +35,13 @@ tasks.withType<JavaCompile>().configureEach {
 
 tasks.test {
     useJUnitPlatform()
+    inputs.files(fileTree("../LecternWorkbench/jars") { include("*/server.jar") })
+        .withPropertyName("workbenchJars")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.files(fileTree("../LecternWorkbench/normalized") { include("*/meta.json") })
+        .withPropertyName("workbenchNormalizedSheets")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.files(fileTree("../LecternDiff/build/install/LecternDiff/bin"))
+        .withPropertyName("diffScripts")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
 }
