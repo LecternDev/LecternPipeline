@@ -2,16 +2,13 @@ package tlm.dev.lectern.pipeline.publish;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
-import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
-import tlm.dev.lectern.pipeline.files.DraftFolders;
 import tlm.dev.lectern.pipeline.files.FolderDeleter;
 import tlm.dev.lectern.pipeline.model.VersionId;
 
@@ -19,175 +16,190 @@ public final class PublicationService {
 
     private static final System.Logger LOGGER = System.getLogger(PublicationService.class.getName());
     private static final String WORK_FOLDER_PREFIX = "lectern-publish-";
-    private static final int EXAMPLES = 5;
 
     private final GitClient git;
+    private final RepositoryGuard guard;
+    private final TreeUpdater updater;
     private final Path scratchRoot;
 
-    public PublicationService(GitClient git, Path scratchRoot) {
+    public PublicationService(GitClient git, RepositoryGuard guard, TreeUpdater updater, Path scratchRoot) {
         this.git = Objects.requireNonNull(git, "git");
+        this.guard = Objects.requireNonNull(guard, "guard");
+        this.updater = Objects.requireNonNull(updater, "updater");
         this.scratchRoot = Objects.requireNonNull(scratchRoot, "scratchRoot");
     }
 
     public void requirePublishable(VersionId id, Path repository) {
         Path work = newWorkFolder();
         try {
-            requireUsable(id, repository, work);
+            guard.requirePublishable(id, repository, work);
         } finally {
             deleteWorkFolder(work);
         }
     }
 
-    public PublicationResult publish(VersionId id, Path source, List<String> files, Path repository) {
+    public PublicationResult publish(PublicationRequest request) {
         Path work = newWorkFolder();
         try {
-            requireUsable(id, repository, work);
-            Path target = repository.resolve(DataRepositoryRules.versionFolder(id.value()));
-            Set<String> expected = copyInto(id, source, files, target);
-            stageAndCommit(id, repository, work, expected);
-            return new PublicationResult(id, repository, files.size(), git.run(repository, work, "rev-parse", "HEAD").strip());
+            return publishIn(request, work);
         } finally {
             deleteWorkFolder(work);
         }
     }
 
-    private void requireUsable(VersionId id, Path repository, Path work) {
-        requireRepositoryRoot(repository, work);
-        requireTextConversionOff(id, repository, work);
-        Path target = repository.resolve(DataRepositoryRules.versionFolder(id.value()));
-        if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
-            throw new PublicationException("Version " + id.value() + ": the folder " + target
-                    + " already exists. Nothing was changed, remove it yourself to publish again");
-        }
-        requireNothingStaged(repository, work);
-    }
-
-    private void requireRepositoryRoot(Path repository, Path work) {
-        if (!Files.isDirectory(repository)) {
-            throw new PublicationException("The data repository " + repository + " is not a folder");
-        }
-        String top;
-        try {
-            top = git.run(repository, work, "rev-parse", "--show-toplevel").strip();
-        } catch (GitException exception) {
-            throw new PublicationException("The folder " + repository + " is not a git repository (" + exception.getMessage() + ")");
-        }
-        try {
-            if (top.isEmpty() || !Files.isSameFile(Path.of(top), repository)) {
-                throw new PublicationException("The folder " + repository + " is not the top level of a git repository, which is " + top);
-            }
-        } catch (IOException exception) {
-            throw new UncheckedIOException("Could not compare " + repository + " with " + top, exception);
-        }
-    }
-
-    private void requireTextConversionOff(VersionId id, Path repository, Path work) {
-        String attribute = git.run(repository, work, "check-attr", "text", "--", DataRepositoryRules.versionFolder(id.value()) + "/meta.json");
-        if (!attribute.strip().endsWith(": text: unset")) {
-            throw new PublicationException("The data repository " + repository + " does not switch text conversion off for versions/,"
-                    + " git could change the line endings of the published bytes. Commit a .gitattributes with these lines first:\n"
-                    + DataRepositoryRules.GITATTRIBUTES);
-        }
-    }
-
-    private void requireNothingStaged(Path repository, Path work) {
-        if (!stagedPaths(repository, work).isEmpty()) {
-            throw new PublicationException("The data repository " + repository + " already has staged changes. Nothing was changed,"
-                    + " commit or unstage them first");
-        }
-    }
-
-    private Set<String> copyInto(VersionId id, Path source, List<String> files, Path target) {
-        Path draft = DraftFolders.draftOf(target);
-        try {
-            DraftFolders.clear(draft);
-            Set<String> published = new HashSet<>();
-            for (String relative : files) {
-                requirePlainRelativePath(id, relative);
-                Path destination = draft.resolve(relative);
-                Files.createDirectories(destination.getParent());
-                Files.copy(source.resolve(relative), destination);
-                published.add(DataRepositoryRules.versionFolder(id.value()) + "/" + relative);
-            }
-            DraftFolders.promote(draft, target);
-            return published;
-        } catch (FileAlreadyExistsException exception) {
-            throw new PublicationException("Version " + id.value() + ": " + exception.getFile() + " appeared during the run and was not replaced");
-        } catch (IOException exception) {
-            throw new UncheckedIOException("Could not copy version " + id.value() + " into " + target, exception);
-        }
-    }
-
-    private static void requirePlainRelativePath(VersionId id, String relative) {
-        boolean plain = !relative.isEmpty() && !relative.startsWith("/") && relative.indexOf('\\') < 0 && relative.indexOf(':') < 0
-                && List.of(relative.split("/", -1)).stream().noneMatch(segment -> segment.isEmpty() || segment.equals(".") || segment.equals(".."));
-        if (!plain) {
-            throw new PublicationException("Version " + id.value() + ": the path '" + relative + "' is not a plain relative path");
-        }
-    }
-
-    private void stageAndCommit(VersionId id, Path repository, Path work, Set<String> expected) {
-        String folder = DataRepositoryRules.versionFolder(id.value());
-        try {
-            git.run(repository, work, "add", "--", folder);
-            requireSamePaths(id, "staged", expected, stagedPaths(repository, work));
-            git.run(repository, work, "commit", "-q", "-m", "data: " + id.value());
-        } catch (GitException | PublicationException exception) {
-            withdraw(repository, work, folder, exception);
-            throw exception;
-        }
+    private PublicationResult publishIn(PublicationRequest request, Path work) {
+        VersionId id = request.id();
+        Path repository = request.repository();
+        guard.requirePublishable(id, repository, work);
+        requireKnownShape(request);
+        TreePlan plan = new TreePlan(Set.copyOf(request.rawFiles()), trackedRawFiles(repository, work));
+        Set<String> extra = extraPaths(request);
+        StagedSet staged = stageAndCommit(request, plan, extra, work);
         requireOneLineMessage(id, repository, work);
-        requireSamePaths(id, "committed", expected,
-                splitNul(git.run(repository, work, "diff-tree", "--root", "--no-commit-id", "--name-only", "-r", "-z", "HEAD")));
+        StagedSetVerifier.verifySame(id, staged, committedSet(repository, work));
+        String commit = git.run(repository, work, "rev-parse", "HEAD").strip();
+        createTag(id, repository, work, commit);
+        return new PublicationResult(id, repository, commit, plan.incoming().size(), rawChanges(staged), diffNames(request));
     }
 
-    private void withdraw(Path repository, Path work, String folder, RuntimeException failure) {
+    private StagedSet stageAndCommit(PublicationRequest request, TreePlan plan, Set<String> extra, Path work) {
+        VersionId id = request.id();
+        Path repository = request.repository();
         try {
-            git.run(repository, work, "reset", "-q", "--", folder);
+            writeFiles(request, plan);
+            git.run(repository, work, stageArguments(request, plan));
+            StagedSet staged = StagedSet.parse(git.run(repository, work, "diff", "--cached", "--name-status", "--no-renames", "-z"));
+            StagedSetVerifier.verify(id, "staged", plan, extra, staged);
+            git.run(repository, work, "commit", "-q", "-m", DataRepositoryRules.commitTitle(id.value()));
+            return staged;
+        } catch (RuntimeException failure) {
+            Set<String> created = new HashSet<>(plan.added());
+            created.addAll(extra);
+            restore(repository, work, created, failure);
+            throw failure;
+        }
+    }
+
+    private void writeFiles(PublicationRequest request, TreePlan plan) {
+        VersionId id = request.id();
+        try {
+            updater.applyRaw(request.repository(), request.normalizedFolder(), plan);
+            updater.copyFile(request.repository(), request.normalizedFolder().resolve(DataRepositoryRules.META_FILE), DataRepositoryRules.metaPath(id.value()));
+            for (String name : DataRepositoryRules.DIFF_FILES) {
+                byte[] bytes = request.diffs().get(name);
+                if (bytes != null) {
+                    updater.writeFile(request.repository(), DataRepositoryRules.diffPath(id.value(), name), bytes);
+                }
+            }
+        } catch (IOException exception) {
+            throw new UncheckedIOException("Could not write version " + id.value() + " into " + request.repository(), exception);
+        }
+    }
+
+    private static String[] stageArguments(PublicationRequest request, TreePlan plan) {
+        List<String> arguments = new ArrayList<>(List.of("add", "--"));
+        for (String folder : DataRepositoryRules.RAW_FOLDERS) {
+            boolean written = request.rawFiles().stream().anyMatch(file -> file.startsWith(folder + "/"));
+            boolean emptied = plan.removed().stream().anyMatch(file -> file.startsWith(folder + "/"));
+            if (written || emptied) {
+                arguments.add(folder);
+            }
+        }
+        arguments.add(DataRepositoryRules.versionFolder(request.id().value()));
+        if (!request.diffs().isEmpty()) {
+            arguments.add(DataRepositoryRules.diffsFolder(request.id().value()));
+        }
+        return arguments.toArray(String[]::new);
+    }
+
+    private void restore(Path repository, Path work, Set<String> created, RuntimeException failure) {
+        try {
+            git.run(repository, work, "reset", "-q", "--hard", "HEAD");
         } catch (GitException resetFailure) {
             failure.addSuppressed(resetFailure);
             return;
         }
         try {
-            FolderDeleter.deleteTree(repository.resolve(folder));
-        } catch (IOException deleteFailure) {
-            failure.addSuppressed(deleteFailure);
+            updater.remove(repository, created);
+        } catch (IOException removeFailure) {
+            failure.addSuppressed(removeFailure);
         }
     }
 
     private void requireOneLineMessage(VersionId id, Path repository, Path work) {
+        String expected = DataRepositoryRules.commitTitle(id.value());
         String message = git.run(repository, work, "log", "-1", "--pretty=%B").strip();
-        if (!message.equals("data: " + id.value())) {
-            throw new PublicationException("Version " + id.value() + ": the commit message is not the single line 'data: " + id.value()
-                    + "', a hook may have changed it. Message found: [" + message + "]. The commit was made, fix it by hand");
+        if (!message.equals(expected)) {
+            throw new PublicationException("Version " + id.value() + ": the commit message is not the single line '" + expected
+                    + "', a hook may have changed it. Message found: [" + message + "]. The commit was made, fix it by hand and create the tag "
+                    + id.value());
         }
     }
 
-    private static void requireSamePaths(VersionId id, String what, Set<String> expected, Set<String> found) {
-        if (expected.equals(found)) {
-            return;
+    private StagedSet committedSet(Path repository, Path work) {
+        return StagedSet.parse(git.run(repository, work, "diff-tree", "-r", "--no-commit-id", "--name-status", "--no-renames", "-z", "HEAD"));
+    }
+
+    private void createTag(VersionId id, Path repository, Path work, String commit) {
+        try {
+            git.run(repository, work, "tag", "--", id.value());
+        } catch (GitException failure) {
+            throw new PublicationException("Version " + id.value() + ": the commit " + commit + " was made but the tag " + id.value()
+                    + " could not be created (" + failure.getMessage() + "). Create it by hand with: git tag " + id.value() + " " + commit, failure);
         }
-        List<String> unexpected = new ArrayList<>(found);
-        unexpected.removeAll(expected);
-        List<String> missing = new ArrayList<>(expected);
-        missing.removeAll(found);
-        throw new PublicationException("Version " + id.value() + ": the " + what + " files are not exactly the published ones. Unexpected "
-                + unexpected.size() + " " + unexpected.stream().sorted().limit(EXAMPLES).toList()
-                + ", missing " + missing.size() + " " + missing.stream().sorted().limit(EXAMPLES).toList());
     }
 
-    private Set<String> stagedPaths(Path repository, Path work) {
-        return splitNul(git.run(repository, work, "diff", "--cached", "--name-only", "--no-renames", "-z"));
-    }
-
-    private static Set<String> splitNul(String output) {
-        Set<String> paths = new HashSet<>();
-        for (String path : output.split("\0")) {
+    private Set<String> trackedRawFiles(Path repository, Path work) {
+        List<String> arguments = new ArrayList<>(List.of("ls-files", "-z", "--"));
+        arguments.addAll(DataRepositoryRules.RAW_FOLDERS);
+        Set<String> tracked = new HashSet<>();
+        for (String path : git.run(repository, work, arguments.toArray(String[]::new)).split("\0")) {
             if (!path.isEmpty()) {
-                paths.add(path);
+                tracked.add(path);
             }
         }
-        return paths;
+        return tracked;
+    }
+
+    private static Set<String> extraPaths(PublicationRequest request) {
+        Set<String> extra = new HashSet<>();
+        extra.add(DataRepositoryRules.metaPath(request.id().value()));
+        for (String name : request.diffs().keySet()) {
+            extra.add(DataRepositoryRules.diffPath(request.id().value(), name));
+        }
+        return extra;
+    }
+
+    private static List<String> diffNames(PublicationRequest request) {
+        return DataRepositoryRules.DIFF_FILES.stream().filter(request.diffs()::containsKey).toList();
+    }
+
+    private static TreeChanges rawChanges(StagedSet staged) {
+        return new TreeChanges(rawCount(staged, StagedSetVerifier.ADDED), rawCount(staged, StagedSetVerifier.MODIFIED), rawCount(staged, StagedSetVerifier.DELETED));
+    }
+
+    private static int rawCount(StagedSet staged, String status) {
+        return DataRepositoryRules.RAW_FOLDERS.stream().mapToInt(folder -> staged.count(status, folder + "/")).sum();
+    }
+
+    private static void requireKnownShape(PublicationRequest request) {
+        VersionId id = request.id();
+        if (!request.hasMeta()) {
+            throw new PublicationException("Version " + id.value() + ": the normalized folder " + request.normalizedFolder() + " has no "
+                    + DataRepositoryRules.META_FILE);
+        }
+        for (String relative : request.files()) {
+            boolean known = relative.equals(DataRepositoryRules.META_FILE)
+                    || DataRepositoryRules.RAW_FOLDERS.stream().anyMatch(folder -> relative.startsWith(folder + "/"));
+            if (!known || !isPlainRelativePath(relative)) {
+                throw new PublicationException("Version " + id.value() + ": the path '" + relative + "' is not a plain relative path under reports/ or data/");
+            }
+        }
+    }
+
+    private static boolean isPlainRelativePath(String relative) {
+        return !relative.isEmpty() && !relative.startsWith("/") && relative.indexOf('\\') < 0 && relative.indexOf(':') < 0
+                && List.of(relative.split("/", -1)).stream().noneMatch(segment -> segment.isEmpty() || segment.equals(".") || segment.equals(".."));
     }
 
     private Path newWorkFolder() {

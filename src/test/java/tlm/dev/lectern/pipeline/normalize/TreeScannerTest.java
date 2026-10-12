@@ -87,7 +87,7 @@ class TreeScannerTest {
     void symbolicLinkToAFileStopsNamingIt() throws IOException {
         TreeFixtures.write(root(), "reports/real.json", "{}");
         Path link = root().resolve("reports/link.json");
-        assumeTrue(trySymbolicLink(link, root().resolve("reports/real.json")), "this machine cannot create symbolic links, the rule is still covered by the allowlist tests");
+        assumeTrue(TreeFixtures.trySymbolicLink(link, root().resolve("reports/real.json")), "this machine cannot create symbolic links, the rule is still covered by the allowlist tests");
         UnexpectedFileException failure = refusal(DataAllowlist.Layout.GENERATED);
         assertTrue(failure.getMessage().contains("reports/link.json"), failure.getMessage());
         assertTrue(failure.getMessage().contains("symbolic link"), failure.getMessage());
@@ -98,7 +98,7 @@ class TreeScannerTest {
         TreeFixtures.write(temporary.resolve("elsewhere"), "x.json", "{}");
         TreeFixtures.write(root(), "reports/a.json", "{}");
         Path link = root().resolve("data");
-        assumeTrue(tryFolderLink(link, temporary.resolve("elsewhere")), "this machine can create neither symbolic links nor junctions");
+        assumeTrue(TreeFixtures.tryFolderLink(link, temporary.resolve("elsewhere")), "this machine can create neither symbolic links nor junctions");
         UnexpectedFileException failure = refusal(DataAllowlist.Layout.GENERATED);
         assertTrue(failure.getMessage().contains("'data'"), failure.getMessage());
         assertTrue(failure.getMessage().contains("symbolic link"), failure.getMessage());
@@ -108,7 +108,7 @@ class TreeScannerTest {
     void linkNamedLikeTheCacheStillStops() throws IOException {
         TreeFixtures.write(root(), "reports/a.json", "{}");
         Files.createDirectories(temporary.resolve("reports-target"));
-        assumeTrue(tryFolderLink(root().resolve(".cache"), temporary.resolve("reports-target")), "this machine can create neither symbolic links nor junctions");
+        assumeTrue(TreeFixtures.tryFolderLink(root().resolve(".cache"), temporary.resolve("reports-target")), "this machine can create neither symbolic links nor junctions");
         assertTrue(refusal(DataAllowlist.Layout.GENERATED).getMessage().contains("'.cache'"));
     }
 
@@ -116,7 +116,7 @@ class TreeScannerTest {
     void rootThatIsALinkStopsNamingIt() throws IOException {
         TreeFixtures.write(temporary.resolve("real"), "reports/a.json", "{}");
         Path link = temporary.resolve("99.1");
-        assumeTrue(tryFolderLink(link, temporary.resolve("real")), "this machine can create neither symbolic links nor junctions");
+        assumeTrue(TreeFixtures.tryFolderLink(link, temporary.resolve("real")), "this machine can create neither symbolic links nor junctions");
         UnexpectedFileException failure = refusal(DataAllowlist.Layout.GENERATED);
         assertTrue(failure.getMessage().contains("'99.1'"), failure.getMessage());
     }
@@ -142,32 +142,5 @@ class TreeScannerTest {
         TreeFixtures.write(root(), "meta.json", "{}");
         TreeFixtures.write(root(), ".cache/x", "x");
         assertTrue(refusal(DataAllowlist.Layout.NORMALIZED).getMessage().contains(".cache/x"));
-    }
-
-    private static boolean trySymbolicLink(Path link, Path target) throws IOException {
-        try {
-            Files.createDirectories(link.getParent());
-            Files.createSymbolicLink(link, target);
-            return true;
-        } catch (UnsupportedOperationException | SecurityException | IOException exception) {
-            return false;
-        }
-    }
-
-    private static boolean tryFolderLink(Path link, Path target) throws IOException {
-        if (trySymbolicLink(link, target)) {
-            return true;
-        }
-        if (!System.getProperty("os.name").startsWith("Windows")) {
-            return false;
-        }
-        try {
-            Process process = new ProcessBuilder("cmd", "/c", "mklink", "/J", link.toString(), target.toString()).redirectErrorStream(true).start();
-            process.getInputStream().readAllBytes();
-            return process.waitFor() == 0 && Files.exists(link);
-        } catch (InterruptedException exception) {
-            Thread.currentThread().interrupt();
-            return false;
-        }
     }
 }

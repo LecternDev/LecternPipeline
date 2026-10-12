@@ -7,13 +7,15 @@ import java.io.UncheckedIOException;
 import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
-import java.util.List;
 import java.util.MissingResourceException;
+import java.util.Optional;
 import java.util.Set;
+import tlm.dev.lectern.pipeline.diff.CanonicalOutputVerifier;
+import tlm.dev.lectern.pipeline.diff.DiffCommand;
+import tlm.dev.lectern.pipeline.diff.DiffCommandClient;
 import tlm.dev.lectern.pipeline.extract.ExtractionReportRenderer;
 import tlm.dev.lectern.pipeline.extract.ExtractionResult;
 import tlm.dev.lectern.pipeline.extract.ExtractionService;
@@ -25,35 +27,29 @@ import tlm.dev.lectern.pipeline.fetch.JarStore;
 import tlm.dev.lectern.pipeline.fetch.ServerJarService;
 import tlm.dev.lectern.pipeline.fetch.Sha1Hasher;
 import tlm.dev.lectern.pipeline.fetch.VersionJsonReader;
-import tlm.dev.lectern.pipeline.fetch.VersionJsonRef;
 import tlm.dev.lectern.pipeline.http.HttpDownloadClient;
 import tlm.dev.lectern.pipeline.json.CanonicalJsonWriter;
 import tlm.dev.lectern.pipeline.json.JsonTextReader;
 import tlm.dev.lectern.pipeline.manifest.ExcludedVersionsReader;
-import tlm.dev.lectern.pipeline.manifest.LookedUpVersion;
 import tlm.dev.lectern.pipeline.manifest.ManifestClient;
-import tlm.dev.lectern.pipeline.manifest.ManifestEntry;
 import tlm.dev.lectern.pipeline.manifest.ManifestReader;
 import tlm.dev.lectern.pipeline.manifest.RecentVersionsService;
-import tlm.dev.lectern.pipeline.manifest.TrackedVersion;
 import tlm.dev.lectern.pipeline.manifest.VersionListRenderer;
 import tlm.dev.lectern.pipeline.manifest.VersionLookupService;
 import tlm.dev.lectern.pipeline.manifest.VersionScope;
 import tlm.dev.lectern.pipeline.model.VersionId;
-import tlm.dev.lectern.pipeline.normalize.DataAllowlist;
 import tlm.dev.lectern.pipeline.normalize.GameInfoReader;
-import tlm.dev.lectern.pipeline.normalize.NormalizationReportRenderer;
-import tlm.dev.lectern.pipeline.normalize.NormalizationResult;
 import tlm.dev.lectern.pipeline.normalize.NormalizationService;
 import tlm.dev.lectern.pipeline.normalize.NormalizationSettings;
 import tlm.dev.lectern.pipeline.normalize.NormalizationTools;
 import tlm.dev.lectern.pipeline.normalize.TreeScanner;
-import tlm.dev.lectern.pipeline.normalize.VersionMeta;
+import tlm.dev.lectern.pipeline.normalize.VersionMetaReader;
 import tlm.dev.lectern.pipeline.normalize.VersionMetaWriter;
 import tlm.dev.lectern.pipeline.process.ProcessLauncher;
 import tlm.dev.lectern.pipeline.publish.GitClient;
-import tlm.dev.lectern.pipeline.publish.PublicationReportRenderer;
 import tlm.dev.lectern.pipeline.publish.PublicationService;
+import tlm.dev.lectern.pipeline.publish.RepositoryGuard;
+import tlm.dev.lectern.pipeline.publish.TreeUpdater;
 
 final class CommandRunner {
 
@@ -64,6 +60,7 @@ final class CommandRunner {
     private static final Duration MANIFEST_TRANSFER_TIMEOUT = Duration.ofMinutes(2);
     private static final Duration GENERATOR_TIMEOUT = Duration.ofMinutes(10);
     private static final Duration GIT_TIMEOUT = Duration.ofMinutes(5);
+    private static final Duration DIFF_TIMEOUT = Duration.ofMinutes(5);
     private static final String EXCLUDED_VERSIONS_RESOURCE = "/excluded-versions.txt";
 
     private final PipelineConfig config;
@@ -97,14 +94,16 @@ final class CommandRunner {
 
     private void fetch(VersionId id) {
         requireWorkbench();
-        out.print(new FetchReportRenderer().render(fetchJar(lookup(id).version())));
+        VersionPreparer preparer = preparer();
+        out.print(new FetchReportRenderer().render(preparer.fetchJar(preparer.lookup(id).version())));
     }
 
     private void extract(VersionId id) {
         requireWorkbench();
         ExtractionService extraction = extractionService();
         extraction.requireFreshOutput(id);
-        FetchedJar jar = fetchJar(lookup(id).version());
+        VersionPreparer preparer = preparer(extraction);
+        FetchedJar jar = preparer.fetchJar(preparer.lookup(id).version());
         out.print(new FetchReportRenderer().render(jar));
         ExtractionResult result = extraction.extract(id, jar.jar());
         out.print(new ExtractionReportRenderer().render(result));
@@ -112,57 +111,41 @@ final class CommandRunner {
 
     private void normalize(VersionId id) {
         requireWorkbench();
-        NormalizationService normalization = normalizationService();
-        normalization.requireFreshOutput(id);
-        normalizeVersion(id, normalization);
-    }
-
-    private void normalizeVersion(VersionId id, NormalizationService normalization) {
-        LookedUpVersion looked = lookup(id);
-        FetchedJar jar = fetchJar(looked.version());
-        if (jar.downloaded()) {
-            out.print(new FetchReportRenderer().render(jar));
-        }
-        NormalizationResult result = normalization.normalize(metaOf(looked, jar));
-        out.print(new NormalizationReportRenderer().render(result));
+        preparer().normalizeExtracted(id);
     }
 
     private void publish(VersionId id, Path dataRepository) {
         requireWorkbench();
-        PublicationService publication = publicationService();
-        publication.requirePublishable(id, dataRepository);
-        Path normalized = config.workbench().resolve("normalized").resolve(id.value());
-        if (!Files.exists(normalized, LinkOption.NOFOLLOW_LINKS)) {
-            normalizeVersion(id, normalizationService());
-        }
-        List<String> files = new TreeScanner().scan(id, normalized, DataAllowlist.Layout.NORMALIZED);
-        out.print(new PublicationReportRenderer().render(publication.publish(id, normalized, files, dataRepository)));
+        new PublishCommand(publicationService(), preparer(), diffClient(), new TreeScanner(), out).run(id, dataRepository);
     }
 
-    private LookedUpVersion lookup(VersionId id) {
-        return new VersionLookupService(manifestClient(), new ManifestReader(new JsonTextReader()), scope()).findWithBase(id);
+    private VersionPreparer preparer() {
+        return preparer(extractionService());
     }
 
-    private VersionMeta metaOf(LookedUpVersion looked, FetchedJar jar) {
-        TrackedVersion version = looked.version();
-        return new VersionMeta(
-                version.id(),
-                version.kind(),
-                version.releaseTime(),
-                looked.base().step(),
-                looked.base().release(),
-                jar.download().sha1(),
-                new GameInfoReader(new JsonTextReader()).read(version.id(), jar.jar()));
+    private VersionPreparer preparer(ExtractionService extraction) {
+        JsonTextReader json = new JsonTextReader();
+        return new VersionPreparer(
+                config.workbench(),
+                lookupService(),
+                jarService(),
+                extraction,
+                normalizationService(),
+                new VersionMetaReader(json),
+                new GameInfoReader(json),
+                out);
     }
 
-    private FetchedJar fetchJar(TrackedVersion version) {
-        ManifestEntry entry = version.entry();
-        ServerJarService service = new ServerJarService(
+    private VersionLookupService lookupService() {
+        return new VersionLookupService(manifestClient(), new ManifestReader(new JsonTextReader()), scope());
+    }
+
+    private ServerJarService jarService() {
+        return new ServerJarService(
                 new HttpDownloadClient(http, RESPONSE_TIMEOUT, TRANSFER_TIMEOUT),
                 new JarStore(config.workbench().resolve("jars")),
                 new VersionJsonReader(new JsonTextReader()),
                 new Sha1Hasher());
-        return service.ensure(new VersionJsonRef(entry.id(), entry.url(), entry.sha1()));
     }
 
     private ExtractionService extractionService() {
@@ -178,7 +161,16 @@ final class CommandRunner {
     }
 
     private PublicationService publicationService() {
-        return new PublicationService(new GitClient(launcher, config.git(), GIT_TIMEOUT), config.scratchRoot());
+        GitClient git = new GitClient(launcher, config.git(), GIT_TIMEOUT);
+        return new PublicationService(git, new RepositoryGuard(git), new TreeUpdater(), config.scratchRoot());
+    }
+
+    private Optional<DiffCommandClient> diffClient() {
+        return config.diffCommand().map(script -> new DiffCommandClient(
+                launcher,
+                new DiffCommand(script, DIFF_TIMEOUT),
+                new CanonicalOutputVerifier(new JsonTextReader(), new CanonicalJsonWriter()),
+                config.scratchRoot()));
     }
 
     private ManifestClient manifestClient() {

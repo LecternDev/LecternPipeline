@@ -5,8 +5,10 @@ import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import tlm.dev.lectern.pipeline.model.VersionId;
 
 public final class PipelineConfigReader {
@@ -14,7 +16,8 @@ public final class PipelineConfigReader {
     static final String DEFAULT_MANIFEST_URL = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
     static final String WORKBENCH_FOLDER_NAME = "LecternWorkbench";
     static final String GIT_EXECUTABLE = "git";
-    static final String USAGE = "usage: lectern-pipeline list | fetch <id> | extract <id> | normalize <id> | publish <id> --data <git repository>"
+    static final String USAGE = "usage: lectern-pipeline list | fetch <id> | extract <id> | normalize <id>"
+            + " | publish <id> --data <git repository> [--diff-command <script>]"
             + " [--manifest-url=<url>] [--workbench=<folder>] [--java=<executable>]";
 
     private static final String LIST_COMMAND = "list";
@@ -26,8 +29,12 @@ public final class PipelineConfigReader {
     private static final String WORKBENCH_OPTION = "--workbench";
     private static final String JAVA_OPTION = "--java";
     private static final String DATA_OPTION = "--data";
-    private static final List<String> OPTIONS = List.of(MANIFEST_URL_OPTION, WORKBENCH_OPTION, JAVA_OPTION, DATA_OPTION);
+    private static final String DIFF_COMMAND_OPTION = "--diff-command";
+    private static final List<String> OPTIONS = List.of(MANIFEST_URL_OPTION, WORKBENCH_OPTION, JAVA_OPTION, DATA_OPTION, DIFF_COMMAND_OPTION);
+    private static final List<String> PUBLISH_ONLY_OPTIONS = List.of(DATA_OPTION, DIFF_COMMAND_OPTION);
     private static final List<String> WEB_SCHEMES = List.of("http", "https");
+    private static final List<String> SCRIPT_EXTENSIONS = List.of(".bat", ".cmd", ".exe");
+    private static final String WINDOWS_SCRIPT_EXTENSION = ".bat";
 
     private final Environment environment;
 
@@ -42,8 +49,8 @@ public final class PipelineConfigReader {
         String word = args[0];
         if (LIST_COMMAND.equals(word)) {
             Map<String, String> options = options(args, 1);
-            rejectDataOption(word, options);
-            return config(new Command.ListVersions(), options);
+            rejectPublishOnlyOptions(word, options);
+            return config(new Command.ListVersions(), options, Optional.empty());
         }
         if (!List.of(FETCH_COMMAND, EXTRACT_COMMAND, NORMALIZE_COMMAND, PUBLISH_COMMAND).contains(word)) {
             throw new UsageException("Unknown command '" + word + "'\n" + USAGE);
@@ -51,31 +58,48 @@ public final class PipelineConfigReader {
         VersionId id = versionId(args, word);
         Map<String, String> options = options(args, 2);
         if (!PUBLISH_COMMAND.equals(word)) {
-            rejectDataOption(word, options);
+            rejectPublishOnlyOptions(word, options);
         }
-        Command command = switch (word) {
-            case FETCH_COMMAND -> new Command.Fetch(id);
-            case EXTRACT_COMMAND -> new Command.Extract(id);
-            case NORMALIZE_COMMAND -> new Command.Normalize(id);
-            default -> new Command.Publish(id, dataRepository(options));
+        return switch (word) {
+            case FETCH_COMMAND -> config(new Command.Fetch(id), options, Optional.empty());
+            case EXTRACT_COMMAND -> config(new Command.Extract(id), options, Optional.empty());
+            case NORMALIZE_COMMAND -> config(new Command.Normalize(id), options, Optional.empty());
+            default -> config(new Command.Publish(id, dataRepository(options)), options, diffCommand(options));
         };
-        return config(command, options);
     }
 
-    private PipelineConfig config(Command command, Map<String, String> options) {
+    private PipelineConfig config(Command command, Map<String, String> options, Optional<Path> diffCommand) {
         return new PipelineConfig(
                 command,
                 options.containsKey(MANIFEST_URL_OPTION) ? webUrl(options.get(MANIFEST_URL_OPTION)) : URI.create(DEFAULT_MANIFEST_URL),
                 options.containsKey(WORKBENCH_OPTION) ? folder(WORKBENCH_OPTION, options.get(WORKBENCH_OPTION)) : defaultWorkbench(),
                 options.containsKey(JAVA_OPTION) ? executable(options.get(JAVA_OPTION)) : environment.javaHome().resolve("bin").resolve("java"),
                 Path.of(GIT_EXECUTABLE),
+                diffCommand,
                 environment.tempDirectory());
     }
 
-    private static void rejectDataOption(String word, Map<String, String> options) {
-        if (options.containsKey(DATA_OPTION)) {
-            throw new UsageException("The option " + DATA_OPTION + " is only for the command publish, not for " + word + "\n" + USAGE);
+    private static void rejectPublishOnlyOptions(String word, Map<String, String> options) {
+        for (String option : PUBLISH_ONLY_OPTIONS) {
+            if (options.containsKey(option)) {
+                throw new UsageException("The option " + option + " is only for the command publish, not for " + word + "\n" + USAGE);
+            }
         }
+    }
+
+    private Optional<Path> diffCommand(Map<String, String> options) {
+        Optional<String> text = options.containsKey(DIFF_COMMAND_OPTION) ? Optional.of(options.get(DIFF_COMMAND_OPTION)) : environment.diffCommand();
+        return text.map(this::script);
+    }
+
+    private Path script(String text) {
+        if (text.isBlank()) {
+            throw new UsageException("The diff command needs a script path\n" + USAGE);
+        }
+        Path path = folder(DIFF_COMMAND_OPTION, text);
+        String name = path.getFileName().toString().toLowerCase(Locale.ROOT);
+        boolean launchable = SCRIPT_EXTENSIONS.stream().anyMatch(name::endsWith);
+        return environment.windows() && !launchable ? path.resolveSibling(path.getFileName() + WINDOWS_SCRIPT_EXTENSION) : path;
     }
 
     private Path dataRepository(Map<String, String> options) {

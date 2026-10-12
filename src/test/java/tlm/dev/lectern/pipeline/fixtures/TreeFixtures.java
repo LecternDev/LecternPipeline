@@ -61,4 +61,31 @@ public final class TreeFixtures {
             throw new UncheckedIOException(exception);
         }
     }
+
+    public static boolean trySymbolicLink(Path link, Path target) throws IOException {
+        try {
+            Files.createDirectories(link.getParent());
+            Files.createSymbolicLink(link, target);
+            return true;
+        } catch (UnsupportedOperationException | SecurityException | IOException exception) {
+            return false;
+        }
+    }
+
+    public static boolean tryFolderLink(Path link, Path target) throws IOException {
+        if (trySymbolicLink(link, target)) {
+            return true;
+        }
+        if (!System.getProperty("os.name").startsWith("Windows")) {
+            return false;
+        }
+        try {
+            Process process = new ProcessBuilder("cmd", "/c", "mklink", "/J", link.toString(), target.toString()).redirectErrorStream(true).start();
+            process.getInputStream().readAllBytes();
+            return process.waitFor() == 0 && Files.exists(link);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
 }

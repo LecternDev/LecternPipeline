@@ -16,21 +16,27 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.function.Function;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import tlm.dev.lectern.pipeline.process.ProcessOutcome;
+import tlm.dev.lectern.pipeline.fixtures.DiffFixtures;
 import tlm.dev.lectern.pipeline.fixtures.FakeLauncher;
 import tlm.dev.lectern.pipeline.fixtures.FetchFixtures;
 import tlm.dev.lectern.pipeline.fixtures.GitFixtures;
 import tlm.dev.lectern.pipeline.fixtures.JarFixtures;
 import tlm.dev.lectern.pipeline.fixtures.LocalFileServer;
 import tlm.dev.lectern.pipeline.fixtures.ManifestFixtures;
+import tlm.dev.lectern.pipeline.fixtures.NormalizedFixtures;
 import tlm.dev.lectern.pipeline.fixtures.SteppingClock;
 import tlm.dev.lectern.pipeline.fixtures.TreeFixtures;
+import tlm.dev.lectern.pipeline.model.VersionKind;
 import tlm.dev.lectern.pipeline.process.JdkProcessLauncher;
+import tlm.dev.lectern.pipeline.process.ProcessOutcome;
 
 class PipelineMainTest {
 
@@ -43,13 +49,17 @@ class PipelineMainTest {
     private Path workbench;
     private Environment environment;
     private byte[] bundlerJar;
+    private Path diffScript;
 
     @BeforeEach
     void setUp() throws IOException {
         server = new LocalFileServer();
         workbench = base.resolve("LecternWorkbench");
         Files.createDirectories(workbench);
-        environment = new Environment(base.resolve("LecternPipeline"), base.resolve("jdk"), base.resolve("tmp"));
+        environment = new Environment(base.resolve("LecternPipeline"), base.resolve("jdk"), base.resolve("tmp"), false, Optional.empty());
+        diffScript = base.resolve("tools").resolve("LecternDiff");
+        Files.createDirectories(diffScript.getParent());
+        Files.writeString(diffScript, "placeholder for the diff script, the launcher is a fake");
         bundlerJar = Files.readAllBytes(JarFixtures.bundlerJar(base.resolve("model-bundler.jar")));
     }
 
@@ -299,21 +309,76 @@ class PipelineMainTest {
         assertFalse(out().contains("extracted"), out());
     }
 
-    private void publishDemoReleaseWithItsCandidateAndPreviousRelease() {
-        publishManifest(
-                releaseEntry("99.1", bundlerJar, FetchFixtures.sha1Hex(bundlerJar), 100),
-                ManifestFixtures.entryJson("99.1-rc-1", "snapshot", ManifestFixtures.hoursAfterOrigin(50)),
-                ManifestFixtures.entryJson("98.9", "release", ManifestFixtures.hoursAfterOrigin(10)));
+    private String jarEntry(String id, String type, int hoursAfterOrigin) {
+        byte[] versionJson = FetchFixtures.versionJson(id, FetchFixtures.sha1Hex(bundlerJar), bundlerJar.length, server.uri("/jar/" + id).toString());
+        server.serve("/jar/" + id, 200, bundlerJar);
+        server.serve("/version/" + id, 200, versionJson);
+        return ManifestFixtures.entryJson(id, type, ManifestFixtures.hoursAfterOrigin(hoursAfterOrigin),
+                server.uri("/version/" + id).toString(), FetchFixtures.sha1Hex(versionJson));
     }
 
-    private FakeLauncher routingGitToTheRealOne() {
+    private void publishDemoReleaseWithItsCandidateAndPreviousRelease() {
+        publishManifest(jarEntry("99.1", "release", 100), jarEntry("99.1-rc-1", "snapshot", 50), jarEntry("98.9", "release", 10));
+    }
+
+    private FakeLauncher routing(Function<FakeLauncher.Call, ProcessOutcome> diff) {
         JdkProcessLauncher real = new JdkProcessLauncher();
         return new FakeLauncher(call -> {
-            if (call.command().get(0).equals("git")) {
+            String program = call.command().get(0);
+            if (program.equals("git")) {
                 return real.launch(call.command(), call.workingDirectory(), call.timeout());
             }
-            throw new AssertionError("only git may be launched here: " + call.command());
+            if (program.equals(diffScript.toString())) {
+                return diff.apply(call);
+            }
+            return generatorWritingTheDemoTree(call);
         });
+    }
+
+    private static ProcessOutcome generatorWritingTheDemoTree(FakeLauncher.Call call) {
+        Path output = FakeLauncher.outputOf(call.command());
+        TreeFixtures.write(output, "reports/gadgets.json", "{\"demo:lamp\": {\"protocol_id\": 1}, \"demo:chest\": {\"protocol_id\": 0}}");
+        TreeFixtures.write(output, "data/demo/recipe/thing.json", "{\"b\": 1, \"a\": 0.50}");
+        TreeFixtures.write(output, ".cache/abc", "cache");
+        return new ProcessOutcome.Exited(0, "", "");
+    }
+
+    private static ProcessOutcome echoingDiff(FakeLauncher.Call call) {
+        List<String> command = call.command();
+        return new ProcessOutcome.Exited(0, DiffFixtures.canonicalDiff(
+                optionValue(command, "--from"), optionValue(command, "--from-kind"), optionValue(command, "--to"), optionValue(command, "--to-kind"), 2), "");
+    }
+
+    private static String optionValue(List<String> command, String option) {
+        return command.get(command.indexOf(option) + 1);
+    }
+
+    private String[] publishArguments(String id, Path repository) {
+        return new String[] {"publish", id, "--workbench=" + workbench, "--manifest-url=" + server.uri("/manifest"), "--data=" + repository,
+                "--diff-command=" + diffScript};
+    }
+
+    private Path dataRepository() {
+        assumeTrue(GitFixtures.gitAvailable(), "git is not available on this machine");
+        return GitFixtures.initRepository(base.resolve("data-repository"));
+    }
+
+    private void prepareNormalizedDemoLine() {
+        Path root = workbench.resolve("normalized");
+        NormalizedFixtures.write(root, "98.9", new VersionKind.Release(), Optional.empty(), Optional.empty(), Map.of("reports/gadgets.json", "{}\n"));
+        NormalizedFixtures.write(root, "99.1-rc-1", new VersionKind.ReleaseCandidate(), Optional.of("98.9"), Optional.empty(),
+                Map.of("reports/gadgets.json", "{\n  \"demo:chest\": 0\n}\n"));
+        NormalizedFixtures.write(root, "99.1", new VersionKind.Release(), Optional.of("99.1-rc-1"), Optional.of("98.9"),
+                Map.of("reports/gadgets.json", "{\n  \"demo:chest\": 0,\n  \"demo:lamp\": 1\n}\n", "data/demo/recipe/thing.json", "{\n  \"a\": 0.50,\n  \"b\": 1\n}\n"));
+    }
+
+    private void assertRepositoryUntouched(Path repository, String headBefore) {
+        assertEquals(headBefore, GitFixtures.head(repository));
+        assertEquals("", GitFixtures.status(repository));
+        assertEquals("", GitFixtures.run(repository, "tag", "--list").strip());
+        assertFalse(Files.exists(repository.resolve("reports")));
+        assertFalse(Files.exists(repository.resolve("versions")));
+        assertFalse(Files.exists(repository.resolve("diffs")));
     }
 
     @Test
@@ -385,50 +450,212 @@ class PipelineMainTest {
     }
 
     @Test
-    void publishNormalizesWhenNeededThenCommitsOnlyTheVersionFolderInTheDataRepository() {
-        assumeTrue(GitFixtures.gitAvailable(), "git is not available on this machine");
+    void publishRunsTheWholeChainForTheVersionAndItsBasesThenCommitsRawFilesSheetDiffsAndTag() {
         publishDemoReleaseWithItsCandidateAndPreviousRelease();
-        TreeFixtures.demoGeneratedTree(workbench.resolve("generated"), "99.1");
-        Path repository = GitFixtures.initRepository(base.resolve("data-repository"));
-        int exit = run(routingGitToTheRealOne(), "publish", "99.1", "--workbench=" + workbench, "--manifest-url=" + server.uri("/manifest"), "--data", repository.toString());
+        Path repository = dataRepository();
+        FakeLauncher launcher = routing(PipelineMainTest::echoingDiff);
+        int exit = run(launcher, publishArguments("99.1", repository));
         assertEquals("", err());
         assertEquals(0, exit);
-        assertTrue(out().contains("normalized 99.1"), out());
-        assertTrue(out().contains("published 99.1"), out());
-        assertTrue(out().contains("pushed      no"), out());
+        assertTrue(out().contains("fetched 99.1 (downloaded)"), out());
+        assertTrue(out().contains("normalized 99.1\n"), out());
+        assertTrue(out().contains("normalized 99.1-rc-1\n"), out());
+        assertTrue(out().contains("normalized 98.9\n"), out());
+        assertTrue(out().contains("diff        step.json 99.1-rc-1 -> 99.1 ("), out());
+        assertTrue(out().contains("diff        release.json 98.9 -> 99.1 ("), out());
+        assertTrue(out().contains("published 99.1\n"), out());
+        assertTrue(out().contains("  tag         99.1\n"), out());
         assertEquals("data: 99.1", GitFixtures.run(repository, "log", "-1", "--pretty=%B").strip());
-        assertEquals(List.of("versions/99.1/data/demo/recipe/thing.json", "versions/99.1/data/minecraft/datapacks/demo_pack/pack.mcmeta",
-                "versions/99.1/meta.json", "versions/99.1/reports/gadgets.json", "versions/99.1/reports/minecraft/components/item/demo_lamp.json"),
-                GitFixtures.run(repository, "diff-tree", "--root", "--no-commit-id", "--name-only", "-r", "HEAD").lines().sorted().toList());
+        assertEquals(List.of("data/demo/recipe/thing.json", "diffs/99.1/release.json", "diffs/99.1/step.json", "reports/gadgets.json", "versions/99.1/meta.json"),
+                GitFixtures.run(repository, "diff-tree", "--root", "-r", "--no-commit-id", "--name-only", "HEAD").lines().sorted().toList());
+        assertEquals(GitFixtures.head(repository), GitFixtures.run(repository, "rev-parse", "99.1^{commit}").strip());
+        assertEquals(TreeFixtures.read(workbench.resolve("normalized/99.1/reports/gadgets.json")), TreeFixtures.read(repository.resolve("reports/gadgets.json")));
         assertEquals(TreeFixtures.read(workbench.resolve("normalized/99.1/meta.json")), TreeFixtures.read(repository.resolve("versions/99.1/meta.json")));
+        assertEquals(DiffFixtures.canonicalDiff("99.1-rc-1", "release-candidate", "99.1", "release", 2), TreeFixtures.read(repository.resolve("diffs/99.1/step.json")));
+        assertEquals(DiffFixtures.canonicalDiff("98.9", "release", "99.1", "release", 2), TreeFixtures.read(repository.resolve("diffs/99.1/release.json")));
+        assertTrue(Files.isRegularFile(workbench.resolve("normalized/99.1-rc-1/meta.json")));
+        assertTrue(Files.isRegularFile(workbench.resolve("normalized/98.9/meta.json")));
     }
 
     @Test
-    void publishUsesTheNormalizedFolderThatIsAlreadyThereWithoutTouchingTheNetwork() {
-        assumeTrue(GitFixtures.gitAvailable(), "git is not available on this machine");
+    void diffCommandIsCalledOncePerBaseWithTheNormalizedFoldersTheIdsAndTheKinds() {
         publishDemoReleaseWithItsCandidateAndPreviousRelease();
-        TreeFixtures.demoGeneratedTree(workbench.resolve("generated"), "99.1");
-        assertEquals(0, run(arguments("normalize", "99.1")));
-        int manifestHits = server.hits("/manifest");
-        outBytes.reset();
-        Path repository = GitFixtures.initRepository(base.resolve("data-repository"));
-        assertEquals(0, run(routingGitToTheRealOne(), "publish", "99.1", "--workbench=" + workbench, "--data=" + repository));
-        assertEquals(manifestHits, server.hits("/manifest"));
+        Path repository = dataRepository();
+        FakeLauncher launcher = routing(PipelineMainTest::echoingDiff);
+        assertEquals(0, run(launcher, publishArguments("99.1", repository)));
+        List<List<String>> diffCalls = launcher.calls().stream().map(FakeLauncher.Call::command).filter(command -> command.get(0).equals(diffScript.toString())).toList();
+        assertEquals(List.of(
+                List.of(diffScript.toString(), "diff", workbench.resolve("normalized/99.1-rc-1").toString(), workbench.resolve("normalized/99.1").toString(),
+                        "--from", "99.1-rc-1", "--from-kind", "release-candidate", "--to", "99.1", "--to-kind", "release"),
+                List.of(diffScript.toString(), "diff", workbench.resolve("normalized/98.9").toString(), workbench.resolve("normalized/99.1").toString(),
+                        "--from", "98.9", "--from-kind", "release", "--to", "99.1", "--to-kind", "release")), diffCalls);
+    }
+
+    @Test
+    void publishUsesTheNormalizedFoldersThatAreAlreadyThereWithoutTouchingTheNetwork() {
+        publishDemoReleaseWithItsCandidateAndPreviousRelease();
+        prepareNormalizedDemoLine();
+        Path repository = dataRepository();
+        assertEquals(0, run(routing(PipelineMainTest::echoingDiff), publishArguments("99.1", repository)));
+        assertEquals("", err());
+        assertEquals(0, server.hits("/manifest"));
+        assertEquals(0, server.hits("/jar/99.1"));
+        assertEquals(0, server.hits("/jar/99.1-rc-1"));
+        assertEquals(0, server.hits("/jar/98.9"));
         assertFalse(out().contains("normalized 99.1"), out());
-        assertEquals("data: 99.1", GitFixtures.run(repository, "log", "-1", "--pretty=%B").strip());
+        assertEquals(List.of("diffs/99.1/release.json", "diffs/99.1/step.json", "data/demo/recipe/thing.json", "reports/gadgets.json", "versions/99.1/meta.json").stream().sorted().toList(),
+                GitFixtures.run(repository, "diff-tree", "--root", "-r", "--no-commit-id", "--name-only", "HEAD").lines().sorted().toList());
+    }
+
+    @Test
+    void secondVersionOfTheLineCommitsOnlyWhatChangedInTheRawData() {
+        publishDemoReleaseWithItsCandidateAndPreviousRelease();
+        prepareNormalizedDemoLine();
+        Path repository = dataRepository();
+        FakeLauncher launcher = routing(PipelineMainTest::echoingDiff);
+        assertEquals(0, run(launcher, publishArguments("99.1-rc-1", repository)));
+        outBytes.reset();
+        assertEquals(0, run(launcher, publishArguments("99.1", repository)));
+        assertEquals("", err());
+        assertEquals(List.of("M\treports/gadgets.json", "A\tdata/demo/recipe/thing.json", "A\tversions/99.1/meta.json", "A\tdiffs/99.1/step.json", "A\tdiffs/99.1/release.json").stream().sorted().toList(),
+                GitFixtures.run(repository, "diff-tree", "-r", "--no-commit-id", "--name-status", "HEAD").lines().sorted().toList());
+        assertEquals("99.1\n99.1-rc-1", String.join("\n", GitFixtures.run(repository, "tag", "--list").lines().sorted().toList()));
+    }
+
+    @Test
+    void publishReadsTheDiffCommandFromTheEnvironmentWhenTheOptionIsAbsent() {
+        publishDemoReleaseWithItsCandidateAndPreviousRelease();
+        prepareNormalizedDemoLine();
+        Path repository = dataRepository();
+        environment = new Environment(environment.currentDirectory(), environment.javaHome(), environment.tempDirectory(), false, Optional.of(diffScript.toString()));
+        int exit = run(routing(PipelineMainTest::echoingDiff), "publish", "99.1", "--workbench=" + workbench, "--manifest-url=" + server.uri("/manifest"), "--data=" + repository);
+        assertEquals("", err());
+        assertEquals(0, exit);
+        assertTrue(Files.isRegularFile(repository.resolve("diffs/99.1/step.json")));
+    }
+
+    @Test
+    void publishWithoutTheDiffCommandRefusesBeforeDownloadingAnyJar() {
+        publishDemoReleaseWithItsCandidateAndPreviousRelease();
+        Path repository = dataRepository();
+        String head = GitFixtures.head(repository);
+        int exit = run(routing(PipelineMainTest::echoingDiff), "publish", "99.1", "--workbench=" + workbench, "--manifest-url=" + server.uri("/manifest"), "--data=" + repository);
+        assertEquals(2, exit);
+        assertTrue(err().contains("Publishing 99.1 needs the diff command"), err());
+        assertTrue(err().contains("--diff-command"), err());
+        assertTrue(err().contains("LECTERN_DIFF_COMMAND"), err());
+        assertEquals(0, server.hits("/jar/99.1"));
+        assertEquals(0, server.hits("/jar/99.1-rc-1"));
+        assertRepositoryUntouched(repository, head);
+        assertFalse(Files.exists(workbench.resolve("normalized")));
+    }
+
+    @Test
+    void publishOfAVersionWithoutBasesNeedsNoDiffCommand() {
+        Path root = workbench.resolve("normalized");
+        NormalizedFixtures.write(root, "1.21.11", new VersionKind.Release(), Optional.empty(), Optional.empty(), Map.of("reports/gadgets.json", "{}\n"));
+        Path repository = dataRepository();
+        publishManifest(ManifestFixtures.entryJson("1.21.11", "release", ManifestFixtures.hoursAfterOrigin(10)));
+        int exit = run(routing(call -> {
+            throw new AssertionError("the diff command must not run");
+        }), "publish", "1.21.11", "--workbench=" + workbench, "--manifest-url=" + server.uri("/manifest"), "--data=" + repository);
+        assertEquals("", err());
+        assertEquals(0, exit);
+        assertTrue(out().contains("  diffs       none\n"), out());
+        assertFalse(Files.exists(repository.resolve("diffs")));
+        assertEquals("1.21.11", GitFixtures.run(repository, "tag", "--list").strip());
+    }
+
+    @Test
+    void publishStopsWhenTheDiffCommandFailsAndLeavesTheRepositoryAsItWas() {
+        publishDemoReleaseWithItsCandidateAndPreviousRelease();
+        prepareNormalizedDemoLine();
+        Path repository = dataRepository();
+        String head = GitFixtures.head(repository);
+        int exit = run(routing(call -> new ProcessOutcome.Exited(1, "", "error: Version 99.1, reports/blocks.json: invented failure")), publishArguments("99.1", repository));
+        assertEquals(1, exit);
+        assertTrue(err().startsWith("lectern-pipeline: Version 99.1"), err());
+        assertTrue(err().contains("exited with code 1"), err());
+        assertTrue(err().contains("invented failure"), err());
+        assertFalse(out().contains("published"), out());
+        assertRepositoryUntouched(repository, head);
+    }
+
+    @Test
+    void publishStopsWhenTheDiffOutputIsNotInCanonicalForm() {
+        publishDemoReleaseWithItsCandidateAndPreviousRelease();
+        prepareNormalizedDemoLine();
+        Path repository = dataRepository();
+        String head = GitFixtures.head(repository);
+        int exit = run(routing(call -> new ProcessOutcome.Exited(0, echoingDiffText(call).replace("\n", "\r\n"), "")), publishArguments("99.1", repository));
+        assertEquals(1, exit);
+        assertTrue(err().contains("Version 99.1"), err());
+        assertTrue(err().contains("not in canonical JSON form"), err());
+        assertRepositoryUntouched(repository, head);
+    }
+
+    @Test
+    void publishStopsWhenTheDiffNamesAnotherVersion() {
+        publishDemoReleaseWithItsCandidateAndPreviousRelease();
+        prepareNormalizedDemoLine();
+        Path repository = dataRepository();
+        String head = GitFixtures.head(repository);
+        int exit = run(routing(call -> new ProcessOutcome.Exited(0, DiffFixtures.canonicalDiff("98.8", "release", "99.1", "release", 1), "")), publishArguments("99.1", repository));
+        assertEquals(1, exit);
+        assertTrue(err().contains("'98.8 release' as its 'from' version"), err());
+        assertRepositoryUntouched(repository, head);
+    }
+
+    @Test
+    void publishWithADiffScriptThatDoesNotExistSaysHowToBuildItBeforeDownloadingAnyJar() {
+        publishDemoReleaseWithItsCandidateAndPreviousRelease();
+        Path repository = dataRepository();
+        String head = GitFixtures.head(repository);
+        int exit = run(routing(PipelineMainTest::echoingDiff), "publish", "99.1", "--workbench=" + workbench, "--manifest-url=" + server.uri("/manifest"),
+                "--data=" + repository, "--diff-command=" + base.resolve("tools/absent"));
+        assertEquals(1, exit);
+        assertTrue(err().contains("does not exist"), err());
+        assertTrue(err().contains("installDist"), err());
+        assertEquals(0, server.hits("/jar/99.1"));
+        assertRepositoryUntouched(repository, head);
+    }
+
+    @Test
+    void publishWhoseBaseCannotBeDownloadedLeavesTheRepositoryUntouched() {
+        publishManifest(jarEntry("99.1", "release", 100), releaseEntry("99.1-rc-1", FetchFixtures.inventedBytes(7, bundlerJar.length), FetchFixtures.sha1Hex(bundlerJar), 50),
+                jarEntry("98.9", "release", 10));
+        Path repository = dataRepository();
+        String head = GitFixtures.head(repository);
+        int exit = run(routing(PipelineMainTest::echoingDiff), publishArguments("99.1", repository));
+        assertEquals(1, exit);
+        assertTrue(err().contains("Version 99.1-rc-1"), err());
+        assertRepositoryUntouched(repository, head);
+    }
+
+    @Test
+    void publishRefusesARepositoryThatIsNotCleanBeforeAnyNetworkAccess() {
+        publishDemoReleaseWithItsCandidateAndPreviousRelease();
+        Path repository = dataRepository();
+        TreeFixtures.write(repository, "notes.txt", "x");
+        assertEquals(1, run(routing(PipelineMainTest::echoingDiff), publishArguments("99.1", repository)));
+        assertTrue(err().contains("not clean"), err());
+        assertTrue(err().contains("notes.txt"), err());
+        assertEquals(0, server.hits("/manifest"));
+        assertFalse(Files.exists(workbench.resolve("normalized")));
     }
 
     @Test
     void publishRefusesARepositoryWithoutTheAttributesBeforeNormalizingAnything() {
         assumeTrue(GitFixtures.gitAvailable(), "git is not available on this machine");
         publishDemoReleaseWithItsCandidateAndPreviousRelease();
-        TreeFixtures.demoGeneratedTree(workbench.resolve("generated"), "99.1");
         Path repository = GitFixtures.initRepository(base.resolve("data-repository"), false);
-        assertEquals(1, run(routingGitToTheRealOne(), "publish", "99.1", "--workbench=" + workbench, "--manifest-url=" + server.uri("/manifest"), "--data=" + repository));
-        assertTrue(err().contains("versions/** -text"), err());
+        GitFixtures.commitFile(repository, "readme.txt", "x", "chore: first");
+        assertEquals(1, run(routing(PipelineMainTest::echoingDiff), publishArguments("99.1", repository)));
+        assertTrue(err().contains("reports/** -text"), err());
+        assertTrue(err().contains("diffs/** -text"), err());
         assertEquals(0, server.hits("/manifest"));
         assertFalse(Files.exists(workbench.resolve("normalized")));
-        assertFalse(Files.exists(repository.resolve("versions")));
+        assertFalse(Files.exists(repository.resolve("reports")));
     }
 
     @Test
@@ -436,7 +663,28 @@ class PipelineMainTest {
         assumeTrue(GitFixtures.gitAvailable(), "git is not available on this machine");
         publishDemoReleaseWithItsCandidateAndPreviousRelease();
         Path plain = Files.createDirectories(base.resolve("plain"));
-        assertEquals(1, run(routingGitToTheRealOne(), "publish", "99.1", "--workbench=" + workbench, "--manifest-url=" + server.uri("/manifest"), "--data=" + plain));
+        assertEquals(1, run(routing(PipelineMainTest::echoingDiff), publishArguments("99.1", plain)));
         assertTrue(err().contains("not a git repository"), err());
+    }
+
+    @Test
+    void publishingTheSameVersionAgainIsRefusedBeforeAnyNetworkAccess() {
+        publishDemoReleaseWithItsCandidateAndPreviousRelease();
+        prepareNormalizedDemoLine();
+        Path repository = dataRepository();
+        FakeLauncher launcher = routing(PipelineMainTest::echoingDiff);
+        assertEquals(0, run(launcher, publishArguments("99.1", repository)));
+        String head = GitFixtures.head(repository);
+        outBytes.reset();
+        errBytes.reset();
+        assertEquals(1, run(launcher, publishArguments("99.1", repository)));
+        assertTrue(err().contains("published already"), err());
+        assertEquals(0, server.hits("/manifest"));
+        assertEquals(head, GitFixtures.head(repository));
+        assertEquals("", GitFixtures.status(repository));
+    }
+
+    private String echoingDiffText(FakeLauncher.Call call) {
+        return ((ProcessOutcome.Exited) echoingDiff(call)).stdout();
     }
 }

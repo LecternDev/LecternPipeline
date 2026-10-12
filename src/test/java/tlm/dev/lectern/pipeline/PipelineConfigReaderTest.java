@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.net.URI;
 import java.nio.file.Path;
+import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -15,9 +16,13 @@ import tlm.dev.lectern.pipeline.model.VersionId;
 class PipelineConfigReaderTest {
 
     private static final Path BASE = Path.of("lectern-test-base").toAbsolutePath();
-    private static final Environment ENVIRONMENT = new Environment(BASE.resolve("LecternPipeline"), BASE.resolve("jdk"), BASE.resolve("tmp"));
+    private static final Environment ENVIRONMENT = environment(false, Optional.empty());
 
     private final PipelineConfigReader reader = new PipelineConfigReader(ENVIRONMENT);
+
+    private static Environment environment(boolean windows, Optional<String> diffCommand) {
+        return new Environment(BASE.resolve("LecternPipeline"), BASE.resolve("jdk"), BASE.resolve("tmp"), windows, diffCommand);
+    }
 
     @Test
     void listWithoutOptionUsesTheDefaultsOfTheEnvironment() {
@@ -158,7 +163,70 @@ class PipelineConfigReaderTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"--manifest-url", "--workbench", "--java", "--data"})
+    @ValueSource(strings = {"list", "fetch 26.3", "extract 26.3", "normalize 26.3"})
+    void diffCommandOptionOnAnotherCommandIsAUsageError(String command) {
+        String[] words = (command + " --diff-command=x").split(" ");
+        UsageException failure = assertThrows(UsageException.class, () -> reader.read(words));
+        assertTrue(failure.getMessage().contains("--diff-command is only for the command publish"), failure.getMessage());
+    }
+
+    @Test
+    void publishWithoutADiffCommandHasNone() {
+        assertEquals(Optional.empty(), reader.read(new String[] {"publish", "26.3", "--data=x"}).diffCommand());
+    }
+
+    @Test
+    void diffCommandOptionIsResolvedAgainstTheCurrentDirectoryWithEqualsOrASpace() {
+        Path expected = ENVIRONMENT.currentDirectory().resolve("LecternDiff/build/install/LecternDiff/bin/LecternDiff");
+        String script = "../LecternPipeline/LecternDiff/build/install/LecternDiff/bin/LecternDiff";
+        assertEquals(Optional.of(expected), reader.read(new String[] {"publish", "26.3", "--data=x", "--diff-command=" + script}).diffCommand());
+        assertEquals(Optional.of(expected), reader.read(new String[] {"publish", "26.3", "--data=x", "--diff-command", script}).diffCommand());
+    }
+
+    @Test
+    void diffCommandVariableIsUsedWhenTheOptionIsAbsentAndTheOptionWins() {
+        PipelineConfigReader withVariable = new PipelineConfigReader(environment(false, Optional.of("/opt/diff/bin/LecternDiff")));
+        Path variable = ENVIRONMENT.currentDirectory().resolve("/opt/diff/bin/LecternDiff").normalize();
+        assertEquals(Optional.of(variable), withVariable.read(new String[] {"publish", "26.3", "--data=x"}).diffCommand());
+        assertEquals(Optional.of(ENVIRONMENT.currentDirectory().resolve("mine")),
+                withVariable.read(new String[] {"publish", "26.3", "--data=x", "--diff-command=mine"}).diffCommand());
+    }
+
+    @Test
+    void diffCommandVariableIsIgnoredByTheCommandsThatDoNotDiff() {
+        PipelineConfigReader withVariable = new PipelineConfigReader(environment(false, Optional.of("/opt/diff/bin/LecternDiff")));
+        assertEquals(Optional.empty(), withVariable.read(new String[] {"normalize", "26.3"}).diffCommand());
+        assertEquals(Optional.empty(), withVariable.read(new String[] {"list"}).diffCommand());
+    }
+
+    @Test
+    void onWindowsAScriptWithoutAnExtensionGetsTheBatchExtension() {
+        PipelineConfigReader windows = new PipelineConfigReader(environment(true, Optional.empty()));
+        Path expected = ENVIRONMENT.currentDirectory().resolve("bin").resolve("LecternDiff.bat");
+        assertEquals(Optional.of(expected), windows.read(new String[] {"publish", "26.3", "--data=x", "--diff-command=bin/LecternDiff"}).diffCommand());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"bin/LecternDiff.bat", "bin/LecternDiff.BAT", "bin/LecternDiff.cmd", "bin/LecternDiff.exe"})
+    void onWindowsAScriptThatAlreadyHasAnExtensionIsKept(String script) {
+        PipelineConfigReader windows = new PipelineConfigReader(environment(true, Optional.empty()));
+        assertEquals(Optional.of(ENVIRONMENT.currentDirectory().resolve(script)),
+                windows.read(new String[] {"publish", "26.3", "--data=x", "--diff-command=" + script}).diffCommand());
+    }
+
+    @Test
+    void onOtherSystemsTheScriptIsKeptAsGiven() {
+        assertEquals(Optional.of(ENVIRONMENT.currentDirectory().resolve("bin").resolve("LecternDiff")),
+                reader.read(new String[] {"publish", "26.3", "--data=x", "--diff-command=bin/LecternDiff"}).diffCommand());
+    }
+
+    @Test
+    void blankDiffCommandIsAUsageError() {
+        assertThrows(UsageException.class, () -> reader.read(new String[] {"publish", "26.3", "--data=x", "--diff-command="}));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"--manifest-url", "--workbench", "--java", "--data", "--diff-command"})
     void optionWithoutAValueIsAUsageErrorSayingSo(String option) {
         UsageException failure = assertThrows(UsageException.class, () -> reader.read(new String[] {"publish", "26.3", option}));
         assertTrue(failure.getMessage().contains("needs a value"), failure.getMessage());

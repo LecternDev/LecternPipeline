@@ -52,6 +52,20 @@ public final class GitFixtures {
         return folder;
     }
 
+    public static String head(Path repository) {
+        return run(repository, "rev-parse", "HEAD").strip();
+    }
+
+    public static String status(Path repository) {
+        return run(repository, "status", "--porcelain", "--untracked-files=all");
+    }
+
+    public static void commitFile(Path repository, String relative, String text, String message) {
+        TreeFixtures.write(repository, relative, text);
+        run(repository, "add", "--", relative);
+        run(repository, "commit", "-q", "-m", message);
+    }
+
     public static String run(Path repository, String... arguments) {
         List<String> command = new ArrayList<>(List.of("git", "-C", repository.toString()));
         command.addAll(List.of(arguments));
