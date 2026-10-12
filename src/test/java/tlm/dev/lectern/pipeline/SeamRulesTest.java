@@ -8,7 +8,7 @@ import org.junit.jupiter.api.Test;
 class SeamRulesTest {
 
     private static final List<String> BEHAVIOURAL = List.of("manifest", "fetch", "extract", "normalize", "publish");
-    private static final List<String> TRANSVERSE = List.of("model", "json");
+    private static final List<String> TRANSVERSE = List.of("model", "json", "http", "process", "files");
 
     private static String importing(String... imports) {
         StringBuilder source = new StringBuilder("package tlm.dev.lectern.pipeline.x;\n\n");
@@ -49,7 +49,7 @@ class SeamRulesTest {
 
     @Test
     void transverseFamilyImportingAnyOtherFamilyIsReported() {
-        List<String> everyone = List.of("model", "json", "manifest", "fetch", "extract", "normalize", "publish");
+        List<String> everyone = List.of("model", "json", "http", "process", "files", "manifest", "fetch", "extract", "normalize", "publish");
         for (String from : TRANSVERSE) {
             for (String to : everyone) {
                 String source = importing("tlm.dev.lectern.pipeline." + to + ".Thing");
@@ -92,7 +92,7 @@ class SeamRulesTest {
 
     @Test
     void jacksonOutsideJsonIsReported() {
-        for (String family : List.of("model", "manifest", "fetch", "extract", "normalize", "publish")) {
+        for (String family : List.of("model", "http", "process", "files", "manifest", "fetch", "extract", "normalize", "publish")) {
             String source = importing("tools.jackson.core.JsonParser");
             assertEquals(
                     List.of(family + "/Reader.java: tools.jackson outside json (tools.jackson.core.JsonParser)"),

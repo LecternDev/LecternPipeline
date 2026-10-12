@@ -20,13 +20,13 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import tlm.dev.lectern.pipeline.extract.ProcessOutcome;
 import tlm.dev.lectern.pipeline.fixtures.FakeLauncher;
 import tlm.dev.lectern.pipeline.fixtures.FetchFixtures;
 import tlm.dev.lectern.pipeline.fixtures.JarFixtures;
 import tlm.dev.lectern.pipeline.fixtures.LocalFileServer;
 import tlm.dev.lectern.pipeline.fixtures.ManifestFixtures;
 import tlm.dev.lectern.pipeline.fixtures.SteppingClock;
+import tlm.dev.lectern.pipeline.process.ProcessOutcome;
 
 class PipelineMainTest {
 

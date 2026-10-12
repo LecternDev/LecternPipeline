@@ -1,4 +1,4 @@
-package tlm.dev.lectern.pipeline.extract;
+package tlm.dev.lectern.pipeline.process;
 
 import java.nio.file.Path;
 import java.time.Duration;

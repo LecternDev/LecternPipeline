@@ -1,4 +1,4 @@
-package tlm.dev.lectern.pipeline.fetch;
+package tlm.dev.lectern.pipeline.http;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -70,10 +70,10 @@ public final class HttpDownloadClient implements DownloadSource {
             throw failure(url, exception);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
-            throw new DownloadException("Interrupted while downloading " + url, exception);
+            throw new TransferException("Interrupted while downloading " + url, exception);
         }
         if (response.statusCode() != HTTP_OK) {
-            DownloadException failure = new DownloadException("The download of " + url + " answered HTTP " + response.statusCode());
+            TransferException failure = new TransferException("The download of " + url + " answered HTTP " + response.statusCode());
             try {
                 response.body().close();
             } catch (IOException closeFailure) {
@@ -90,24 +90,24 @@ public final class HttpDownloadClient implements DownloadSource {
         for (int read = from.read(buffer); read >= 0; read = from.read(buffer)) {
             total += read;
             if (total > maxBytes) {
-                throw new DownloadException("The download of " + url + " is larger than the " + maxBytes + " bytes allowed");
+                throw new TransferException("The download of " + url + " is larger than the " + maxBytes + " bytes allowed");
             }
             to.write(buffer, 0, read);
         }
     }
 
-    private DownloadException timedOut(URI url) {
-        return new DownloadException("The download of " + url + " did not finish within " + transferTimeout.toSeconds() + " seconds");
+    private TransferException timedOut(URI url) {
+        return new TransferException("The download of " + url + " did not finish within " + transferTimeout.toSeconds() + " seconds");
     }
 
-    private static DownloadException failure(URI url, IOException exception) {
+    private static TransferException failure(URI url, IOException exception) {
         if (exception instanceof HttpTimeoutException) {
-            return new DownloadException("The server of " + url + " did not answer in time", exception);
+            return new TransferException("The server of " + url + " did not answer in time", exception);
         }
         if (exception instanceof InterruptedIOException) {
             Thread.currentThread().interrupt();
-            return new DownloadException("Interrupted while downloading " + url, exception);
+            return new TransferException("Interrupted while downloading " + url, exception);
         }
-        return new DownloadException("Could not download " + url + ": " + exception, exception);
+        return new TransferException("Could not download " + url + ": " + exception, exception);
     }
 }

@@ -18,6 +18,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import tlm.dev.lectern.pipeline.model.VersionId;
+import tlm.dev.lectern.pipeline.process.JdkProcessLauncher;
 
 class RealGeneratorTest {
 

@@ -1,11 +1,5 @@
 package tlm.dev.lectern.pipeline.extract;
 
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -20,6 +14,14 @@ import tlm.dev.lectern.pipeline.fixtures.FakeLauncher;
 import tlm.dev.lectern.pipeline.fixtures.JarFixtures;
 import tlm.dev.lectern.pipeline.fixtures.SteppingClock;
 import tlm.dev.lectern.pipeline.model.VersionId;
+import tlm.dev.lectern.pipeline.process.ProcessLaunchException;
+import tlm.dev.lectern.pipeline.process.ProcessOutcome;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 
 class ExtractionServiceTest {
 

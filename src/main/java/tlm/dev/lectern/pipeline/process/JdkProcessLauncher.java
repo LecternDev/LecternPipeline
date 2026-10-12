@@ -1,4 +1,4 @@
-package tlm.dev.lectern.pipeline.extract;
+package tlm.dev.lectern.pipeline.process;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -14,9 +14,22 @@ public final class JdkProcessLauncher implements ProcessLauncher {
 
     private static final String STDOUT_LOG = "lectern-stdout.log";
     private static final String STDERR_LOG = "lectern-stderr.log";
-    private static final int TAIL_LINES = 15;
-    private static final int TAIL_BYTES = 64 * 1024;
+    private static final int DEFAULT_OUTPUT_LIMIT = 8 * 1024 * 1024;
+    private static final String DROPPED_MARKER = "[earlier output dropped]\n";
     private static final Duration KILL_GRACE = Duration.ofSeconds(10);
+
+    private final int outputLimit;
+
+    public JdkProcessLauncher() {
+        this(DEFAULT_OUTPUT_LIMIT);
+    }
+
+    public JdkProcessLauncher(int outputLimit) {
+        if (outputLimit < 1) {
+            throw new IllegalArgumentException("The output limit must be positive: " + outputLimit);
+        }
+        this.outputLimit = outputLimit;
+    }
 
     @Override
     public ProcessOutcome launch(List<String> command, Path workingDirectory, Duration timeout) {
@@ -30,11 +43,11 @@ public final class JdkProcessLauncher implements ProcessLauncher {
         try {
             process.getOutputStream().close();
             if (process.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS)) {
-                return new ProcessOutcome.Exited(process.exitValue(), tail(stdout), tail(stderr));
+                return new ProcessOutcome.Exited(process.exitValue(), lastBytesOf(stdout), lastBytesOf(stderr));
             }
             process.destroyForcibly();
             process.waitFor(KILL_GRACE.toMillis(), TimeUnit.MILLISECONDS);
-            return new ProcessOutcome.TimedOut(timeout, tail(stdout), tail(stderr));
+            return new ProcessOutcome.TimedOut(timeout, lastBytesOf(stdout), lastBytesOf(stderr));
         } catch (InterruptedException exception) {
             process.destroyForcibly();
             Thread.currentThread().interrupt();
@@ -53,10 +66,10 @@ public final class JdkProcessLauncher implements ProcessLauncher {
         }
     }
 
-    private static String tail(Path file) {
+    private String lastBytesOf(Path file) {
         try (SeekableByteChannel channel = Files.newByteChannel(file)) {
             long size = channel.size();
-            long start = Math.max(0, size - TAIL_BYTES);
+            long start = Math.max(0, size - outputLimit);
             channel.position(start);
             ByteBuffer buffer = ByteBuffer.allocate((int) (size - start));
             while (buffer.hasRemaining()) {
@@ -64,8 +77,8 @@ public final class JdkProcessLauncher implements ProcessLauncher {
                     break;
                 }
             }
-            List<String> lines = new String(buffer.array(), 0, buffer.position(), StandardCharsets.UTF_8).lines().toList();
-            return String.join("\n", lines.subList(Math.max(0, lines.size() - TAIL_LINES), lines.size()));
+            String text = new String(buffer.array(), 0, buffer.position(), StandardCharsets.UTF_8);
+            return start > 0 ? DROPPED_MARKER + text : text;
         } catch (IOException exception) {
             return "(output not readable: " + exception.getMessage() + ")";
         }

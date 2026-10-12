@@ -12,20 +12,19 @@ import java.time.Clock;
 import java.time.Duration;
 import java.util.MissingResourceException;
 import java.util.Set;
-import tlm.dev.lectern.pipeline.extract.ExtractionResult;
 import tlm.dev.lectern.pipeline.extract.ExtractionReportRenderer;
+import tlm.dev.lectern.pipeline.extract.ExtractionResult;
 import tlm.dev.lectern.pipeline.extract.ExtractionService;
 import tlm.dev.lectern.pipeline.extract.ExtractionSettings;
 import tlm.dev.lectern.pipeline.extract.JarEraDetector;
-import tlm.dev.lectern.pipeline.extract.ProcessLauncher;
 import tlm.dev.lectern.pipeline.fetch.FetchReportRenderer;
 import tlm.dev.lectern.pipeline.fetch.FetchedJar;
-import tlm.dev.lectern.pipeline.fetch.HttpDownloadClient;
 import tlm.dev.lectern.pipeline.fetch.JarStore;
 import tlm.dev.lectern.pipeline.fetch.ServerJarService;
 import tlm.dev.lectern.pipeline.fetch.Sha1Hasher;
 import tlm.dev.lectern.pipeline.fetch.VersionJsonReader;
 import tlm.dev.lectern.pipeline.fetch.VersionJsonRef;
+import tlm.dev.lectern.pipeline.http.HttpDownloadClient;
 import tlm.dev.lectern.pipeline.json.JsonTextReader;
 import tlm.dev.lectern.pipeline.manifest.ExcludedVersionsReader;
 import tlm.dev.lectern.pipeline.manifest.ManifestClient;
@@ -37,6 +36,7 @@ import tlm.dev.lectern.pipeline.manifest.VersionListRenderer;
 import tlm.dev.lectern.pipeline.manifest.VersionLookupService;
 import tlm.dev.lectern.pipeline.manifest.VersionScope;
 import tlm.dev.lectern.pipeline.model.VersionId;
+import tlm.dev.lectern.pipeline.process.ProcessLauncher;
 
 final class CommandRunner {
 
@@ -44,6 +44,7 @@ final class CommandRunner {
 
     private static final Duration RESPONSE_TIMEOUT = Duration.ofSeconds(60);
     private static final Duration TRANSFER_TIMEOUT = Duration.ofMinutes(30);
+    private static final Duration MANIFEST_TRANSFER_TIMEOUT = Duration.ofMinutes(2);
     private static final Duration GENERATOR_TIMEOUT = Duration.ofMinutes(10);
     private static final String EXCLUDED_VERSIONS_RESOURCE = "/excluded-versions.txt";
 
@@ -110,7 +111,7 @@ final class CommandRunner {
     }
 
     private ManifestClient manifestClient() {
-        return new ManifestClient(http, config.manifestUrl(), RESPONSE_TIMEOUT);
+        return new ManifestClient(new HttpDownloadClient(http, RESPONSE_TIMEOUT, MANIFEST_TRANSFER_TIMEOUT), config.manifestUrl());
     }
 
     private void requireWorkbench() {

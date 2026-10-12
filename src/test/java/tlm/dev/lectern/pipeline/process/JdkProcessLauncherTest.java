@@ -1,4 +1,4 @@
-package tlm.dev.lectern.pipeline.extract;
+package tlm.dev.lectern.pipeline.process;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -34,15 +34,15 @@ class JdkProcessLauncherTest {
         ProcessOutcome outcome = launcher.launch(List.of(JAVA, "-version"), workFolder, Duration.ofSeconds(60));
         ProcessOutcome.Exited exited = assertInstanceOf(ProcessOutcome.Exited.class, outcome);
         assertEquals(0, exited.exitCode());
-        assertTrue(exited.stderrTail().contains("version"), exited.stderrTail());
+        assertTrue(exited.stderr().contains("version"), exited.stderr());
     }
 
     @Test
-    void nonZeroExitCodeIsReturnedWithTheEndOfStderr() {
+    void nonZeroExitCodeIsReturnedWithStderr() {
         ProcessOutcome outcome = launcher.launch(List.of(JAVA, "-cp", workFolder.toString(), "InventedMissingClass"), workFolder, Duration.ofSeconds(60));
         ProcessOutcome.Exited exited = assertInstanceOf(ProcessOutcome.Exited.class, outcome);
         assertEquals(1, exited.exitCode());
-        assertTrue(exited.stderrTail().contains("InventedMissingClass"), exited.stderrTail());
+        assertTrue(exited.stderr().contains("InventedMissingClass"), exited.stderr());
     }
 
     @Test
@@ -51,19 +51,42 @@ class JdkProcessLauncherTest {
         ProcessOutcome.Exited exited = assertInstanceOf(ProcessOutcome.Exited.class,
                 launcher.launch(List.of(JAVA, source.toString()), workFolder, Duration.ofSeconds(60)));
         assertEquals(0, exited.exitCode());
-        assertTrue(exited.stdoutTail().contains("cwd=" + workFolder), exited.stdoutTail());
+        assertTrue(exited.stdout().contains("cwd=" + workFolder), exited.stdout());
     }
 
     @Test
-    void onlyTheLastLinesOfEachStreamAreKept() throws IOException {
+    void wholeOutputOfBothStreamsIsReturnedAndTailKeepsTheLastLines() throws IOException {
         Path source = program("Chatty.java", "        for (int line = 1; line <= 100; line++) {\n            System.err.println(\"error line \" + line);\n            System.out.println(\"out line \" + line);\n        }");
         ProcessOutcome.Exited exited = assertInstanceOf(ProcessOutcome.Exited.class,
                 launcher.launch(List.of(JAVA, source.toString()), workFolder, Duration.ofSeconds(60)));
-        List<String> stderrLines = exited.stderrTail().lines().toList();
-        assertEquals(15, stderrLines.size());
-        assertEquals("error line 100", stderrLines.get(14));
-        assertEquals("error line 86", stderrLines.get(0));
-        assertEquals("out line 100", exited.stdoutTail().lines().toList().get(14));
+        assertEquals(100, exited.stdout().lines().count());
+        assertEquals("out line 1", exited.stdout().lines().findFirst().orElseThrow());
+        List<String> tail = ProcessOutcome.tail(exited.stderr(), 15).lines().toList();
+        assertEquals(15, tail.size());
+        assertEquals("error line 86", tail.get(0));
+        assertEquals("error line 100", tail.get(14));
+    }
+
+    @Test
+    void outputBeyondTheLimitKeepsItsEndAndSaysSo() throws IOException {
+        Path source = program("Verbose.java", "        for (int line = 1; line <= 2000; line++) {\n            System.out.println(\"out line \" + line);\n        }");
+        JdkProcessLauncher small = new JdkProcessLauncher(1000);
+        ProcessOutcome.Exited exited = assertInstanceOf(ProcessOutcome.Exited.class,
+                small.launch(List.of(JAVA, source.toString()), workFolder, Duration.ofSeconds(60)));
+        assertTrue(exited.stdout().startsWith("[earlier output dropped]\n"), exited.stdout());
+        assertTrue(exited.stdout().endsWith("out line 2000\n") || exited.stdout().endsWith("out line 2000\r\n"), exited.stdout());
+        assertTrue(exited.stdout().length() < 1100, "length " + exited.stdout().length());
+    }
+
+    @Test
+    void tailOfShortTextIsTheWholeText() {
+        assertEquals("a\nb", ProcessOutcome.tail("a\nb\n", 15));
+        assertEquals("", ProcessOutcome.tail("", 15));
+    }
+
+    @Test
+    void limitMustBePositive() {
+        assertThrows(IllegalArgumentException.class, () -> new JdkProcessLauncher(0));
     }
 
     @Test

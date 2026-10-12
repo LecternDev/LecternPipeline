@@ -2,6 +2,8 @@ package tlm.dev.lectern.pipeline.fetch;
 
 import java.nio.file.Path;
 import java.util.Objects;
+import tlm.dev.lectern.pipeline.http.DownloadSource;
+import tlm.dev.lectern.pipeline.http.TransferException;
 import tlm.dev.lectern.pipeline.model.Sha1;
 import tlm.dev.lectern.pipeline.model.VersionId;
 
@@ -39,7 +41,7 @@ public final class ServerJarService {
         byte[] versionJson;
         try {
             versionJson = source.readBytes(ref.url(), VERSION_JSON_LIMIT);
-        } catch (DownloadException exception) {
+        } catch (TransferException exception) {
             throw withVersion(ref.id(), exception);
         }
         Sha1 received = hasher.hash(versionJson);
@@ -66,7 +68,7 @@ public final class ServerJarService {
             source.saveTo(server.url(), part, server.size() + SIZE_SLACK);
             verifyDownloaded(id, part, server);
             store.publish(part, id);
-        } catch (DownloadException exception) {
+        } catch (TransferException exception) {
             discardAfter(part, exception);
             throw withVersion(id, exception);
         } catch (RuntimeException exception) {
@@ -94,7 +96,7 @@ public final class ServerJarService {
         }
     }
 
-    private static DownloadException withVersion(VersionId id, DownloadException exception) {
+    private static DownloadException withVersion(VersionId id, TransferException exception) {
         return new DownloadException("Version " + id.value() + ": " + exception.getMessage(), exception);
     }
 }

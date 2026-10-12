@@ -20,6 +20,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import tlm.dev.lectern.pipeline.fixtures.FetchFixtures;
 import tlm.dev.lectern.pipeline.fixtures.LocalFileServer;
+import tlm.dev.lectern.pipeline.http.HttpDownloadClient;
 import tlm.dev.lectern.pipeline.json.JsonTextReader;
 import tlm.dev.lectern.pipeline.model.Sha1;
 import tlm.dev.lectern.pipeline.model.VersionId;

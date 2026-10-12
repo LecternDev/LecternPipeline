@@ -1,4 +1,4 @@
-package tlm.dev.lectern.pipeline.fetch;
+package tlm.dev.lectern.pipeline.http;
 
 import java.io.IOException;
 import java.io.InputStream;

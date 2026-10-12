@@ -1,4 +1,4 @@
-package tlm.dev.lectern.pipeline.fetch;
+package tlm.dev.lectern.pipeline.http;
 
 import java.net.URI;
 import java.nio.file.Path;

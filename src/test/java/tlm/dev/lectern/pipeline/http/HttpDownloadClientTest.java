@@ -1,4 +1,4 @@
-package tlm.dev.lectern.pipeline.fetch;
+package tlm.dev.lectern.pipeline.http;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -52,7 +52,7 @@ class HttpDownloadClientTest {
     void bytesAboveTheLimitAreRefusedNamingTheLimitAndTheUrl() {
         byte[] body = FetchFixtures.inventedBytes(1, 1000);
         server.serve("/file", 200, body);
-        DownloadException failure = assertThrows(DownloadException.class, () -> client.readBytes(server.uri("/file"), 999));
+        TransferException failure = assertThrows(TransferException.class, () -> client.readBytes(server.uri("/file"), 999));
         assertTrue(failure.getMessage().contains("larger than the 999 bytes"), failure.getMessage());
         assertTrue(failure.getMessage().contains(server.uri("/file").toString()), failure.getMessage());
     }
@@ -86,10 +86,21 @@ class HttpDownloadClientTest {
     void anyStatusButOkIsAFailureNamingTheStatus() {
         server.serve("/missing", 404, new byte[0]);
         server.serve("/broken", 500, "oops".getBytes(java.nio.charset.StandardCharsets.UTF_8));
-        DownloadException notFound = assertThrows(DownloadException.class, () -> client.readBytes(server.uri("/missing"), 10));
-        DownloadException broken = assertThrows(DownloadException.class, () -> client.readBytes(server.uri("/broken"), 10));
+        TransferException notFound = assertThrows(TransferException.class, () -> client.readBytes(server.uri("/missing"), 10));
+        TransferException broken = assertThrows(TransferException.class, () -> client.readBytes(server.uri("/broken"), 10));
         assertTrue(notFound.getMessage().contains("HTTP 404"), notFound.getMessage());
         assertTrue(broken.getMessage().contains("HTTP 500"), broken.getMessage());
+    }
+
+    @Test
+    void bodyThatStallsAfterTheHeadersEndsWithATimeout() {
+        server.serveThenStall("/stall", new byte[1000]);
+        HttpDownloadClient impatient = new HttpDownloadClient(http, TIMEOUT, Duration.ofSeconds(1));
+        long start = System.nanoTime();
+        TransferException failure = assertThrows(TransferException.class, () -> impatient.readBytes(server.uri("/stall"), 100_000));
+        long elapsedSeconds = Duration.ofNanos(System.nanoTime() - start).toSeconds();
+        assertTrue(failure.getMessage().contains("did not finish within 1 seconds"), failure.getMessage());
+        assertTrue(elapsedSeconds < 5, "gave up after " + elapsedSeconds + " s");
     }
 
     @Test
@@ -98,7 +109,7 @@ class HttpDownloadClientTest {
         try (ServerSocket socket = new ServerSocket(0, 0, InetAddress.getLoopbackAddress())) {
             closed = URI.create("http://127.0.0.1:" + socket.getLocalPort() + "/file");
         }
-        DownloadException failure = assertThrows(DownloadException.class, () -> client.readBytes(closed, 10));
+        TransferException failure = assertThrows(TransferException.class, () -> client.readBytes(closed, 10));
         assertTrue(failure.getMessage().contains(closed.toString()), failure.getMessage());
         assertTrue(failure.getCause() instanceof IOException, String.valueOf(failure.getCause()));
     }

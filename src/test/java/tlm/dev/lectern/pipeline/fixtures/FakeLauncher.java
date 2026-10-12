@@ -8,8 +8,8 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Function;
-import tlm.dev.lectern.pipeline.extract.ProcessLauncher;
-import tlm.dev.lectern.pipeline.extract.ProcessOutcome;
+import tlm.dev.lectern.pipeline.process.ProcessLauncher;
+import tlm.dev.lectern.pipeline.process.ProcessOutcome;
 
 public final class FakeLauncher implements ProcessLauncher {
 

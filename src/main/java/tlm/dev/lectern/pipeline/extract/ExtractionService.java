@@ -14,6 +14,9 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 import tlm.dev.lectern.pipeline.model.VersionId;
+import tlm.dev.lectern.pipeline.process.ProcessLaunchException;
+import tlm.dev.lectern.pipeline.process.ProcessLauncher;
+import tlm.dev.lectern.pipeline.process.ProcessOutcome;
 
 public final class ExtractionService {
 

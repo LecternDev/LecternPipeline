@@ -5,8 +5,8 @@ import java.net.http.HttpClient;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.Objects;
-import tlm.dev.lectern.pipeline.extract.JdkProcessLauncher;
-import tlm.dev.lectern.pipeline.extract.ProcessLauncher;
+import tlm.dev.lectern.pipeline.process.JdkProcessLauncher;
+import tlm.dev.lectern.pipeline.process.ProcessLauncher;
 import tlm.dev.lectern.pipeline.model.PipelineException;
 
 public final class PipelineMain {
