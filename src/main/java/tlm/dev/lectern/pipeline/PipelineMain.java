@@ -1,51 +1,46 @@
 package tlm.dev.lectern.pipeline;
 
-import java.io.IOException;
-import java.io.InputStream;
 import java.io.PrintStream;
-import java.io.UncheckedIOException;
 import java.net.http.HttpClient;
-import java.nio.charset.StandardCharsets;
+import java.time.Clock;
 import java.time.Duration;
-import java.util.MissingResourceException;
-import java.util.Set;
-import tlm.dev.lectern.pipeline.json.JsonTextReader;
-import tlm.dev.lectern.pipeline.manifest.ExcludedVersionsReader;
-import tlm.dev.lectern.pipeline.manifest.ManifestClient;
-import tlm.dev.lectern.pipeline.manifest.ManifestReader;
-import tlm.dev.lectern.pipeline.manifest.RecentVersionsService;
-import tlm.dev.lectern.pipeline.manifest.VersionListRenderer;
-import tlm.dev.lectern.pipeline.manifest.VersionScope;
+import java.util.Objects;
+import tlm.dev.lectern.pipeline.extract.JdkProcessLauncher;
+import tlm.dev.lectern.pipeline.extract.ProcessLauncher;
 import tlm.dev.lectern.pipeline.model.PipelineException;
-import tlm.dev.lectern.pipeline.model.VersionId;
 
 public final class PipelineMain {
-
-    static final int LIST_SIZE = 15;
 
     private static final int EXIT_OK = 0;
     private static final int EXIT_FAILURE = 1;
     private static final int EXIT_USAGE = 2;
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(30);
-    private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(60);
-    private static final String EXCLUDED_VERSIONS_RESOURCE = "/excluded-versions.txt";
 
     private final PrintStream out;
     private final PrintStream err;
+    private final Environment environment;
+    private final ProcessLauncher launcher;
+    private final Clock clock;
 
-    PipelineMain(PrintStream out, PrintStream err) {
-        this.out = out;
-        this.err = err;
+    PipelineMain(PrintStream out, PrintStream err, Environment environment, ProcessLauncher launcher, Clock clock) {
+        this.out = Objects.requireNonNull(out, "out");
+        this.err = Objects.requireNonNull(err, "err");
+        this.environment = Objects.requireNonNull(environment, "environment");
+        this.launcher = Objects.requireNonNull(launcher, "launcher");
+        this.clock = Objects.requireNonNull(clock, "clock");
     }
 
     public static void main(String[] args) {
-        System.exit(new PipelineMain(System.out, System.err).run(args));
+        PipelineMain main = new PipelineMain(System.out, System.err, Environment.ofThisProcess(), new JdkProcessLauncher(), Clock.systemUTC());
+        System.exit(main.run(args));
     }
 
     int run(String[] args) {
         try {
-            PipelineConfig config = new PipelineConfigReader().read(args);
-            out.print(list(config));
+            PipelineConfig config = new PipelineConfigReader(environment).read(args);
+            try (HttpClient http = HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT).build()) {
+                new CommandRunner(config, http, launcher, clock, out).run();
+            }
             out.flush();
             return EXIT_OK;
         } catch (UsageException exception) {
@@ -54,29 +49,6 @@ public final class PipelineMain {
         } catch (PipelineException exception) {
             err.println("lectern-pipeline: " + exception.getMessage());
             return EXIT_FAILURE;
-        }
-    }
-
-    private static String list(PipelineConfig config) {
-        VersionScope scope = new VersionScope(excludedVersions());
-        try (HttpClient http = HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT).build()) {
-            RecentVersionsService service = new RecentVersionsService(
-                    new ManifestClient(http, config.manifestUrl(), REQUEST_TIMEOUT),
-                    new ManifestReader(new JsonTextReader()),
-                    scope);
-            return new VersionListRenderer().render(service.recent(LIST_SIZE));
-        }
-    }
-
-    private static Set<VersionId> excludedVersions() {
-        try (InputStream stream = PipelineMain.class.getResourceAsStream(EXCLUDED_VERSIONS_RESOURCE)) {
-            if (stream == null) {
-                throw new MissingResourceException(
-                        "The resource " + EXCLUDED_VERSIONS_RESOURCE + " is not packaged", PipelineMain.class.getName(), EXCLUDED_VERSIONS_RESOURCE);
-            }
-            return new ExcludedVersionsReader().parse(new String(stream.readAllBytes(), StandardCharsets.UTF_8));
-        } catch (IOException exception) {
-            throw new UncheckedIOException("Could not read " + EXCLUDED_VERSIONS_RESOURCE, exception);
         }
     }
 }

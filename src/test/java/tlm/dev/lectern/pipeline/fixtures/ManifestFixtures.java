@@ -34,6 +34,12 @@ public final class ManifestFixtures {
                 + "\"sha1\": \"" + sha1Of(id) + "\", \"complianceLevel\": 1}";
     }
 
+    public static String entryJson(String id, String type, Instant releaseTime, String url, String sha1) {
+        return "{\"id\": \"" + id + "\", \"type\": \"" + type + "\", \"url\": \"" + url + "\", "
+                + "\"time\": \"2090-12-31T00:00:00+00:00\", \"releaseTime\": \"" + releaseTime + "\", "
+                + "\"sha1\": \"" + sha1 + "\", \"complianceLevel\": 1}";
+    }
+
     public static String manifestJson(String... entries) {
         return "{\"latest\": {\"release\": \"none\", \"snapshot\": \"none\"}, \"versions\": ["
                 + String.join(", ", entries) + "]}";
