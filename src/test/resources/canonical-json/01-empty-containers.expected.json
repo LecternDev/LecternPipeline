@@ -1,0 +1,15 @@
+{
+  "empty_array": [],
+  "empty_object": {},
+  "nested": {
+    "list": [
+      [],
+      {},
+      [
+        {}
+      ]
+    ]
+  },
+  "spaced_array": [],
+  "spaced_object": {}
+}

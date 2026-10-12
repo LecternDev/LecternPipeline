@@ -1,0 +1,11 @@
+{
+  "empty": {},
+  "list": [
+    0.0,
+    "café",
+    [],
+    null
+  ],
+  "text": "line\nbreak",
+  "zero": 0
+}

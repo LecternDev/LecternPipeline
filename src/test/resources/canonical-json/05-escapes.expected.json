@@ -1,0 +1,15 @@
+{
+  "backslash": "a\\b",
+  "backspace": "a\bb",
+  "carriage_return": "a\rb",
+  "control": "\u0001\u001F",
+  "del": "xy",
+  "emoji_escape": "😀",
+  "form_feed": "a\fb",
+  "newline": "l1\nl2",
+  "quote": "say \"hi\"",
+  "slash": "a/b",
+  "spaces": "  a  b  ",
+  "tab": "a\tb",
+  "unicode_escape": "café"
+}

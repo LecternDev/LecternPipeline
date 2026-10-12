@@ -1,0 +1,1 @@
+{"quote":"say \"hi\"","backslash":"a\\b","slash":"a\/b","newline":"l1\nl2","tab":"a\tb","carriage_return":"a\rb","backspace":"a\bb","form_feed":"a\fb","control":"\u0001\u001f","unicode_escape":"caf\u00e9","emoji_escape":"\ud83d\ude00","spaces":"  a  b  ","del":"x\u007fy"}
