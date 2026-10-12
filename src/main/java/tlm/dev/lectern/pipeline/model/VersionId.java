@@ -12,6 +12,9 @@ public record VersionId(String value) {
         if (value.chars().anyMatch(VersionId::isForbidden)) {
             throw new IllegalArgumentException("A version id must not contain a path separator or a control character: '" + value + "'");
         }
+        if (value.equals(".") || value.equals("..")) {
+            throw new IllegalArgumentException("A version id must not be a relative folder name: '" + value + "'");
+        }
     }
 
     private static boolean isForbidden(int character) {

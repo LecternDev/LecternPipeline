@@ -16,7 +16,7 @@ class VersionIdTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"", "   ", " 26.3", "26.3 ", "26/3", "26\\3", "26.3\n", "26\u00003"})
+    @ValueSource(strings = {"", "   ", " 26.3", "26.3 ", "26/3", "26\\3", "26.3\n", "26\u00003", ".", ".."})
     void idRejectsBlankSurroundingWhitespaceSeparatorsAndControlCharacters(String value) {
         assertThrows(IllegalArgumentException.class, () -> new VersionId(value));
     }
