@@ -14,6 +14,10 @@ public final class VersionScope {
         this.excluded = Set.copyOf(excluded);
     }
 
+    public boolean isExcluded(VersionId id) {
+        return excluded.contains(id);
+    }
+
     public Optional<VersionForm> formOf(VersionId id) {
         if (excluded.contains(id)) {
             return Optional.empty();
