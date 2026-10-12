@@ -7,7 +7,7 @@ import org.junit.jupiter.api.Test;
 
 class SeamRulesTest {
 
-    private static final List<String> BEHAVIOURAL = List.of("manifest", "fetch", "extract", "normalize", "publish");
+    private static final List<String> BEHAVIOURAL = List.of("manifest", "fetch", "extract", "normalize", "publish", "diff");
     private static final List<String> TRANSVERSE = List.of("model", "json", "http", "process", "files");
 
     private static String importing(String... imports) {
@@ -49,7 +49,7 @@ class SeamRulesTest {
 
     @Test
     void transverseFamilyImportingAnyOtherFamilyIsReported() {
-        List<String> everyone = List.of("model", "json", "http", "process", "files", "manifest", "fetch", "extract", "normalize", "publish");
+        List<String> everyone = List.of("model", "json", "http", "process", "files", "manifest", "fetch", "extract", "normalize", "publish", "diff");
         for (String from : TRANSVERSE) {
             for (String to : everyone) {
                 String source = importing("tlm.dev.lectern.pipeline." + to + ".Thing");
@@ -80,7 +80,8 @@ class SeamRulesTest {
                 "tlm.dev.lectern.pipeline.json.JsonTextReader",
                 "tlm.dev.lectern.pipeline.manifest.ManifestClient",
                 "tlm.dev.lectern.pipeline.fetch.JarClient",
-                "tlm.dev.lectern.pipeline.publish.DataWriter");
+                "tlm.dev.lectern.pipeline.publish.DataWriter",
+                "tlm.dev.lectern.pipeline.diff.DiffCommandClient");
         assertEquals(List.of(), SeamRules.violations("PipelineMain.java", source));
     }
 
@@ -92,7 +93,7 @@ class SeamRulesTest {
 
     @Test
     void jacksonOutsideJsonIsReported() {
-        for (String family : List.of("model", "http", "process", "files", "manifest", "fetch", "extract", "normalize", "publish")) {
+        for (String family : List.of("model", "http", "process", "files", "manifest", "fetch", "extract", "normalize", "publish", "diff")) {
             String source = importing("tools.jackson.core.JsonParser");
             assertEquals(
                     List.of(family + "/Reader.java: tools.jackson outside json (tools.jackson.core.JsonParser)"),

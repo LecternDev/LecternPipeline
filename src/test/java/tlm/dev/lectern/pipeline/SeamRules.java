@@ -14,23 +14,24 @@ final class SeamRules {
     private static final Pattern IMPORT = Pattern.compile("^\\s*import\\s+(?:static\\s+)?([\\w.]+)", Pattern.MULTILINE);
     private static final List<String> JDK_PREFIXES = List.of("java.", "javax.");
     private static final Set<String> FAMILIES = Set.of(
-            "model", "json", "http", "process", "files", "manifest", "fetch", "extract", "normalize", "publish");
+            "model", "json", "http", "process", "files", "manifest", "fetch", "extract", "normalize", "publish", "diff");
     private static final Map<String, String> THIRD_PARTY_OWNERS = Map.of("tools.jackson", "json");
 
     private record Seam(String from, Set<String> forbidden) {
     }
 
     private static final List<Seam> SEAMS = List.of(
-            new Seam("model", Set.of("json", "http", "process", "files", "manifest", "fetch", "extract", "normalize", "publish")),
-            new Seam("json", Set.of("model", "http", "process", "files", "manifest", "fetch", "extract", "normalize", "publish")),
-            new Seam("http", Set.of("model", "json", "process", "files", "manifest", "fetch", "extract", "normalize", "publish")),
-            new Seam("process", Set.of("model", "json", "http", "files", "manifest", "fetch", "extract", "normalize", "publish")),
-            new Seam("files", Set.of("model", "json", "http", "process", "manifest", "fetch", "extract", "normalize", "publish")),
-            new Seam("manifest", Set.of("fetch", "extract", "normalize", "publish")),
-            new Seam("fetch", Set.of("manifest", "extract", "normalize", "publish")),
-            new Seam("extract", Set.of("manifest", "fetch", "normalize", "publish")),
-            new Seam("normalize", Set.of("manifest", "fetch", "extract", "publish")),
-            new Seam("publish", Set.of("manifest", "fetch", "extract", "normalize")));
+            new Seam("model", Set.of("json", "http", "process", "files", "manifest", "fetch", "extract", "normalize", "publish", "diff")),
+            new Seam("json", Set.of("model", "http", "process", "files", "manifest", "fetch", "extract", "normalize", "publish", "diff")),
+            new Seam("http", Set.of("model", "json", "process", "files", "manifest", "fetch", "extract", "normalize", "publish", "diff")),
+            new Seam("process", Set.of("model", "json", "http", "files", "manifest", "fetch", "extract", "normalize", "publish", "diff")),
+            new Seam("files", Set.of("model", "json", "http", "process", "manifest", "fetch", "extract", "normalize", "publish", "diff")),
+            new Seam("manifest", Set.of("fetch", "extract", "normalize", "publish", "diff")),
+            new Seam("fetch", Set.of("manifest", "extract", "normalize", "publish", "diff")),
+            new Seam("extract", Set.of("manifest", "fetch", "normalize", "publish", "diff")),
+            new Seam("normalize", Set.of("manifest", "fetch", "extract", "publish", "diff")),
+            new Seam("publish", Set.of("manifest", "fetch", "extract", "normalize", "diff")),
+            new Seam("diff", Set.of("manifest", "fetch", "extract", "normalize", "publish")));
 
     private SeamRules() {
     }
