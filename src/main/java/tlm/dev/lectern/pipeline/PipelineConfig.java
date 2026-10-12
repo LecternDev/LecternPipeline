@@ -4,13 +4,14 @@ import java.net.URI;
 import java.nio.file.Path;
 import java.util.Objects;
 
-public record PipelineConfig(Command command, URI manifestUrl, Path workbench, Path java, Path scratchRoot) {
+public record PipelineConfig(Command command, URI manifestUrl, Path workbench, Path java, Path git, Path scratchRoot) {
 
     public PipelineConfig {
         Objects.requireNonNull(command, "command");
         Objects.requireNonNull(manifestUrl, "manifestUrl");
         Objects.requireNonNull(workbench, "workbench");
         Objects.requireNonNull(java, "java");
+        Objects.requireNonNull(git, "git");
         Objects.requireNonNull(scratchRoot, "scratchRoot");
     }
 }

@@ -13,15 +13,20 @@ public final class PipelineConfigReader {
 
     static final String DEFAULT_MANIFEST_URL = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
     static final String WORKBENCH_FOLDER_NAME = "LecternWorkbench";
-    static final String USAGE = "usage: lectern-pipeline list | fetch <id> | extract <id>"
+    static final String GIT_EXECUTABLE = "git";
+    static final String USAGE = "usage: lectern-pipeline list | fetch <id> | extract <id> | normalize <id> | publish <id> --data <git repository>"
             + " [--manifest-url=<url>] [--workbench=<folder>] [--java=<executable>]";
 
     private static final String LIST_COMMAND = "list";
     private static final String FETCH_COMMAND = "fetch";
     private static final String EXTRACT_COMMAND = "extract";
+    private static final String NORMALIZE_COMMAND = "normalize";
+    private static final String PUBLISH_COMMAND = "publish";
     private static final String MANIFEST_URL_OPTION = "--manifest-url";
     private static final String WORKBENCH_OPTION = "--workbench";
     private static final String JAVA_OPTION = "--java";
+    private static final String DATA_OPTION = "--data";
+    private static final List<String> OPTIONS = List.of(MANIFEST_URL_OPTION, WORKBENCH_OPTION, JAVA_OPTION, DATA_OPTION);
     private static final List<String> WEB_SCHEMES = List.of("http", "https");
 
     private final Environment environment;
@@ -34,27 +39,50 @@ public final class PipelineConfigReader {
         if (args.length == 0) {
             throw new UsageException(USAGE);
         }
-        int firstOption = 1;
-        Command command;
-        switch (args[0]) {
-            case LIST_COMMAND -> command = new Command.ListVersions();
-            case FETCH_COMMAND -> {
-                command = new Command.Fetch(versionId(args, FETCH_COMMAND));
-                firstOption = 2;
-            }
-            case EXTRACT_COMMAND -> {
-                command = new Command.Extract(versionId(args, EXTRACT_COMMAND));
-                firstOption = 2;
-            }
-            default -> throw new UsageException("Unknown command '" + args[0] + "'\n" + USAGE);
+        String word = args[0];
+        if (LIST_COMMAND.equals(word)) {
+            Map<String, String> options = options(args, 1);
+            rejectDataOption(word, options);
+            return config(new Command.ListVersions(), options);
         }
-        Map<String, String> options = options(args, firstOption);
+        if (!List.of(FETCH_COMMAND, EXTRACT_COMMAND, NORMALIZE_COMMAND, PUBLISH_COMMAND).contains(word)) {
+            throw new UsageException("Unknown command '" + word + "'\n" + USAGE);
+        }
+        VersionId id = versionId(args, word);
+        Map<String, String> options = options(args, 2);
+        if (!PUBLISH_COMMAND.equals(word)) {
+            rejectDataOption(word, options);
+        }
+        Command command = switch (word) {
+            case FETCH_COMMAND -> new Command.Fetch(id);
+            case EXTRACT_COMMAND -> new Command.Extract(id);
+            case NORMALIZE_COMMAND -> new Command.Normalize(id);
+            default -> new Command.Publish(id, dataRepository(options));
+        };
+        return config(command, options);
+    }
+
+    private PipelineConfig config(Command command, Map<String, String> options) {
         return new PipelineConfig(
                 command,
                 options.containsKey(MANIFEST_URL_OPTION) ? webUrl(options.get(MANIFEST_URL_OPTION)) : URI.create(DEFAULT_MANIFEST_URL),
-                options.containsKey(WORKBENCH_OPTION) ? workbench(options.get(WORKBENCH_OPTION)) : defaultWorkbench(),
-                options.containsKey(JAVA_OPTION) ? java(options.get(JAVA_OPTION)) : environment.javaHome().resolve("bin").resolve("java"),
+                options.containsKey(WORKBENCH_OPTION) ? folder(WORKBENCH_OPTION, options.get(WORKBENCH_OPTION)) : defaultWorkbench(),
+                options.containsKey(JAVA_OPTION) ? executable(options.get(JAVA_OPTION)) : environment.javaHome().resolve("bin").resolve("java"),
+                Path.of(GIT_EXECUTABLE),
                 environment.tempDirectory());
+    }
+
+    private static void rejectDataOption(String word, Map<String, String> options) {
+        if (options.containsKey(DATA_OPTION)) {
+            throw new UsageException("The option " + DATA_OPTION + " is only for the command publish, not for " + word + "\n" + USAGE);
+        }
+    }
+
+    private Path dataRepository(Map<String, String> options) {
+        if (!options.containsKey(DATA_OPTION)) {
+            throw new UsageException("The command publish needs the option " + DATA_OPTION + " <git repository>\n" + USAGE);
+        }
+        return folder(DATA_OPTION, options.get(DATA_OPTION));
     }
 
     private static VersionId versionId(String[] args, String command) {
@@ -70,13 +98,26 @@ public final class PipelineConfigReader {
 
     private static Map<String, String> options(String[] args, int firstOption) {
         Map<String, String> options = new HashMap<>();
-        for (int index = firstOption; index < args.length; index++) {
-            int equals = args[index].indexOf('=');
-            String name = equals < 0 ? args[index] : args[index].substring(0, equals);
-            if (equals < 0 || !List.of(MANIFEST_URL_OPTION, WORKBENCH_OPTION, JAVA_OPTION).contains(name)) {
-                throw new UsageException("Unknown argument '" + args[index] + "'\n" + USAGE);
+        int index = firstOption;
+        while (index < args.length) {
+            String argument = args[index];
+            int equals = argument.indexOf('=');
+            String name = equals < 0 ? argument : argument.substring(0, equals);
+            if (!OPTIONS.contains(name)) {
+                throw new UsageException("Unknown argument '" + argument + "'\n" + USAGE);
             }
-            if (options.put(name, args[index].substring(equals + 1)) != null) {
+            String value;
+            if (equals >= 0) {
+                value = argument.substring(equals + 1);
+                index++;
+            } else {
+                if (index + 1 >= args.length || args[index + 1].startsWith("--")) {
+                    throw new UsageException("The option " + name + " needs a value\n" + USAGE);
+                }
+                value = args[index + 1];
+                index += 2;
+            }
+            if (options.put(name, value) != null) {
                 throw new UsageException("The option " + name + " is given twice\n" + USAGE);
             }
         }
@@ -88,18 +129,18 @@ public final class PipelineConfigReader {
         return (parent == null ? environment.currentDirectory() : parent).resolve(WORKBENCH_FOLDER_NAME);
     }
 
-    private Path workbench(String text) {
+    private Path folder(String option, String text) {
         if (text.isBlank()) {
-            throw new UsageException("The option " + WORKBENCH_OPTION + " needs a folder\n" + USAGE);
+            throw new UsageException("The option " + option + " needs a folder\n" + USAGE);
         }
         try {
             return environment.currentDirectory().resolve(text).normalize();
         } catch (InvalidPathException exception) {
-            throw new UsageException("The workbench folder is not a valid path: '" + text + "'\n" + USAGE);
+            throw new UsageException("The value of " + option + " is not a valid path: '" + text + "'\n" + USAGE);
         }
     }
 
-    private static Path java(String text) {
+    private static Path executable(String text) {
         if (text.isBlank()) {
             throw new UsageException("The option " + JAVA_OPTION + " needs an executable\n" + USAGE);
         }

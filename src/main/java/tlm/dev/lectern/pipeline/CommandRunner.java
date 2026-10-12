@@ -7,9 +7,11 @@ import java.io.UncheckedIOException;
 import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
+import java.util.List;
 import java.util.MissingResourceException;
 import java.util.Set;
 import tlm.dev.lectern.pipeline.extract.ExtractionReportRenderer;
@@ -25,8 +27,10 @@ import tlm.dev.lectern.pipeline.fetch.Sha1Hasher;
 import tlm.dev.lectern.pipeline.fetch.VersionJsonReader;
 import tlm.dev.lectern.pipeline.fetch.VersionJsonRef;
 import tlm.dev.lectern.pipeline.http.HttpDownloadClient;
+import tlm.dev.lectern.pipeline.json.CanonicalJsonWriter;
 import tlm.dev.lectern.pipeline.json.JsonTextReader;
 import tlm.dev.lectern.pipeline.manifest.ExcludedVersionsReader;
+import tlm.dev.lectern.pipeline.manifest.LookedUpVersion;
 import tlm.dev.lectern.pipeline.manifest.ManifestClient;
 import tlm.dev.lectern.pipeline.manifest.ManifestEntry;
 import tlm.dev.lectern.pipeline.manifest.ManifestReader;
@@ -36,7 +40,20 @@ import tlm.dev.lectern.pipeline.manifest.VersionListRenderer;
 import tlm.dev.lectern.pipeline.manifest.VersionLookupService;
 import tlm.dev.lectern.pipeline.manifest.VersionScope;
 import tlm.dev.lectern.pipeline.model.VersionId;
+import tlm.dev.lectern.pipeline.normalize.DataAllowlist;
+import tlm.dev.lectern.pipeline.normalize.GameInfoReader;
+import tlm.dev.lectern.pipeline.normalize.NormalizationReportRenderer;
+import tlm.dev.lectern.pipeline.normalize.NormalizationResult;
+import tlm.dev.lectern.pipeline.normalize.NormalizationService;
+import tlm.dev.lectern.pipeline.normalize.NormalizationSettings;
+import tlm.dev.lectern.pipeline.normalize.NormalizationTools;
+import tlm.dev.lectern.pipeline.normalize.TreeScanner;
+import tlm.dev.lectern.pipeline.normalize.VersionMeta;
+import tlm.dev.lectern.pipeline.normalize.VersionMetaWriter;
 import tlm.dev.lectern.pipeline.process.ProcessLauncher;
+import tlm.dev.lectern.pipeline.publish.GitClient;
+import tlm.dev.lectern.pipeline.publish.PublicationReportRenderer;
+import tlm.dev.lectern.pipeline.publish.PublicationService;
 
 final class CommandRunner {
 
@@ -46,6 +63,7 @@ final class CommandRunner {
     private static final Duration TRANSFER_TIMEOUT = Duration.ofMinutes(30);
     private static final Duration MANIFEST_TRANSFER_TIMEOUT = Duration.ofMinutes(2);
     private static final Duration GENERATOR_TIMEOUT = Duration.ofMinutes(10);
+    private static final Duration GIT_TIMEOUT = Duration.ofMinutes(5);
     private static final String EXCLUDED_VERSIONS_RESOURCE = "/excluded-versions.txt";
 
     private final PipelineConfig config;
@@ -67,6 +85,8 @@ final class CommandRunner {
             case Command.ListVersions _ -> list();
             case Command.Fetch fetch -> fetch(fetch.id());
             case Command.Extract extract -> extract(extract.id());
+            case Command.Normalize normalize -> normalize(normalize.id());
+            case Command.Publish publish -> publish(publish.id(), publish.dataRepository());
         }
     }
 
@@ -77,21 +97,62 @@ final class CommandRunner {
 
     private void fetch(VersionId id) {
         requireWorkbench();
-        out.print(new FetchReportRenderer().render(fetchJar(lookup(id))));
+        out.print(new FetchReportRenderer().render(fetchJar(lookup(id).version())));
     }
 
     private void extract(VersionId id) {
         requireWorkbench();
         ExtractionService extraction = extractionService();
         extraction.requireFreshOutput(id);
-        FetchedJar jar = fetchJar(lookup(id));
+        FetchedJar jar = fetchJar(lookup(id).version());
         out.print(new FetchReportRenderer().render(jar));
         ExtractionResult result = extraction.extract(id, jar.jar());
         out.print(new ExtractionReportRenderer().render(result));
     }
 
-    private TrackedVersion lookup(VersionId id) {
-        return new VersionLookupService(manifestClient(), new ManifestReader(new JsonTextReader()), scope()).find(id);
+    private void normalize(VersionId id) {
+        requireWorkbench();
+        NormalizationService normalization = normalizationService();
+        normalization.requireFreshOutput(id);
+        normalizeVersion(id, normalization);
+    }
+
+    private void normalizeVersion(VersionId id, NormalizationService normalization) {
+        LookedUpVersion looked = lookup(id);
+        FetchedJar jar = fetchJar(looked.version());
+        if (jar.downloaded()) {
+            out.print(new FetchReportRenderer().render(jar));
+        }
+        NormalizationResult result = normalization.normalize(metaOf(looked, jar));
+        out.print(new NormalizationReportRenderer().render(result));
+    }
+
+    private void publish(VersionId id, Path dataRepository) {
+        requireWorkbench();
+        PublicationService publication = publicationService();
+        publication.requirePublishable(id, dataRepository);
+        Path normalized = config.workbench().resolve("normalized").resolve(id.value());
+        if (!Files.exists(normalized, LinkOption.NOFOLLOW_LINKS)) {
+            normalizeVersion(id, normalizationService());
+        }
+        List<String> files = new TreeScanner().scan(id, normalized, DataAllowlist.Layout.NORMALIZED);
+        out.print(new PublicationReportRenderer().render(publication.publish(id, normalized, files, dataRepository)));
+    }
+
+    private LookedUpVersion lookup(VersionId id) {
+        return new VersionLookupService(manifestClient(), new ManifestReader(new JsonTextReader()), scope()).findWithBase(id);
+    }
+
+    private VersionMeta metaOf(LookedUpVersion looked, FetchedJar jar) {
+        TrackedVersion version = looked.version();
+        return new VersionMeta(
+                version.id(),
+                version.kind(),
+                version.releaseTime(),
+                looked.base().step(),
+                looked.base().release(),
+                jar.download().sha1(),
+                new GameInfoReader(new JsonTextReader()).read(version.id(), jar.jar()));
     }
 
     private FetchedJar fetchJar(TrackedVersion version) {
@@ -108,6 +169,16 @@ final class CommandRunner {
         ExtractionSettings settings = new ExtractionSettings(
                 config.workbench().resolve("generated"), config.scratchRoot(), config.java(), GENERATOR_TIMEOUT);
         return new ExtractionService(launcher, new JarEraDetector(), settings, clock);
+    }
+
+    private NormalizationService normalizationService() {
+        NormalizationTools tools = new NormalizationTools(new TreeScanner(), new JsonTextReader(), new CanonicalJsonWriter());
+        NormalizationSettings settings = new NormalizationSettings(config.workbench().resolve("generated"), config.workbench().resolve("normalized"));
+        return new NormalizationService(tools, new VersionMetaWriter(new CanonicalJsonWriter()), settings, clock);
+    }
+
+    private PublicationService publicationService() {
+        return new PublicationService(new GitClient(launcher, config.git(), GIT_TIMEOUT), config.scratchRoot());
     }
 
     private ManifestClient manifestClient() {

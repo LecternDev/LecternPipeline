@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -20,13 +21,16 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import tlm.dev.lectern.pipeline.process.ProcessOutcome;
 import tlm.dev.lectern.pipeline.fixtures.FakeLauncher;
 import tlm.dev.lectern.pipeline.fixtures.FetchFixtures;
+import tlm.dev.lectern.pipeline.fixtures.GitFixtures;
 import tlm.dev.lectern.pipeline.fixtures.JarFixtures;
 import tlm.dev.lectern.pipeline.fixtures.LocalFileServer;
 import tlm.dev.lectern.pipeline.fixtures.ManifestFixtures;
 import tlm.dev.lectern.pipeline.fixtures.SteppingClock;
-import tlm.dev.lectern.pipeline.process.ProcessOutcome;
+import tlm.dev.lectern.pipeline.fixtures.TreeFixtures;
+import tlm.dev.lectern.pipeline.process.JdkProcessLauncher;
 
 class PipelineMainTest {
 
@@ -293,5 +297,146 @@ class PipelineMainTest {
         assertTrue(err().contains("invented boom"), err());
         assertTrue(out().contains("fetched 99.1 (downloaded)"), out());
         assertFalse(out().contains("extracted"), out());
+    }
+
+    private void publishDemoReleaseWithItsCandidateAndPreviousRelease() {
+        publishManifest(
+                releaseEntry("99.1", bundlerJar, FetchFixtures.sha1Hex(bundlerJar), 100),
+                ManifestFixtures.entryJson("99.1-rc-1", "snapshot", ManifestFixtures.hoursAfterOrigin(50)),
+                ManifestFixtures.entryJson("98.9", "release", ManifestFixtures.hoursAfterOrigin(10)));
+    }
+
+    private FakeLauncher routingGitToTheRealOne() {
+        JdkProcessLauncher real = new JdkProcessLauncher();
+        return new FakeLauncher(call -> {
+            if (call.command().get(0).equals("git")) {
+                return real.launch(call.command(), call.workingDirectory(), call.timeout());
+            }
+            throw new AssertionError("only git may be launched here: " + call.command());
+        });
+    }
+
+    @Test
+    void normalizeWritesTheCanonicalTreeAndMetaJsonIntoTheWorkbench() throws IOException {
+        publishDemoReleaseWithItsCandidateAndPreviousRelease();
+        TreeFixtures.demoGeneratedTree(workbench.resolve("generated"), "99.1");
+        int exit = run(arguments("normalize", "99.1"));
+        assertEquals("", err());
+        assertEquals(0, exit);
+        assertTrue(out().contains("fetched 99.1 (downloaded)"), out());
+        assertTrue(out().contains("normalized 99.1"), out());
+        Path normalized = workbench.resolve("normalized").resolve("99.1");
+        assertEquals("{\n  \"demo:chest\": {\n    \"protocol_id\": 0\n  },\n  \"demo:lamp\": {\n    \"protocol_id\": 1\n  }\n}\n",
+                TreeFixtures.read(normalized.resolve("reports/gadgets.json")));
+        assertEquals(List.of("data/demo/recipe/thing.json", "data/minecraft/datapacks/demo_pack/pack.mcmeta", "meta.json", "reports/gadgets.json",
+                "reports/minecraft/components/item/demo_lamp.json"), TreeFixtures.filesUnder(normalized));
+        assertEquals("""
+                {
+                  "game": {
+                    "id": "99.1"
+                  },
+                  "id": "99.1",
+                  "jar_sha1": "%s",
+                  "kind": "release",
+                  "release_base": "98.9",
+                  "release_time": "2090-01-05T04:00:00Z",
+                  "schema_version": 1,
+                  "step_base": "99.1-rc-1"
+                }
+                """.formatted(FetchFixtures.sha1Hex(bundlerJar)), TreeFixtures.read(normalized.resolve("meta.json")));
+    }
+
+    @Test
+    void normalizeRefusesAnExistingNormalizedFolderBeforeAnyNetworkAccess() {
+        publishDemoReleaseWithItsCandidateAndPreviousRelease();
+        TreeFixtures.demoGeneratedTree(workbench.resolve("generated"), "99.1");
+        TreeFixtures.write(workbench.resolve("normalized").resolve("99.1"), "reports/old.json", "{}");
+        assertEquals(1, run(arguments("normalize", "99.1")));
+        assertTrue(err().contains("already exists"), err());
+        assertEquals(0, server.hits("/manifest"));
+        assertEquals(List.of("reports/old.json"), TreeFixtures.filesUnder(workbench.resolve("normalized").resolve("99.1")));
+    }
+
+    @Test
+    void normalizeWithoutAGeneratedFolderAsksForExtraction() {
+        publishDemoReleaseWithItsCandidateAndPreviousRelease();
+        assertEquals(1, run(arguments("normalize", "99.1")));
+        assertTrue(err().contains("extract the version first"), err());
+        assertFalse(Files.exists(workbench.resolve("normalized").resolve("99.1")));
+    }
+
+    @Test
+    void normalizeStopsOnAFileOutsideTheAllowlistAndWritesNothing() {
+        publishDemoReleaseWithItsCandidateAndPreviousRelease();
+        TreeFixtures.demoGeneratedTree(workbench.resolve("generated"), "99.1");
+        TreeFixtures.write(workbench.resolve("generated").resolve("99.1"), "data/minecraft/structure/demo.nbt", new byte[] {1});
+        assertEquals(1, run(arguments("normalize", "99.1")));
+        assertTrue(err().contains("data/minecraft/structure/demo.nbt"), err());
+        assertTrue(err().contains("Version 99.1"), err());
+        assertFalse(Files.exists(workbench.resolve("normalized")));
+    }
+
+    @Test
+    void normalizeRefusesAnExcludedVersion() {
+        publishManifest(ManifestFixtures.entryJson("26w14a", "snapshot", ManifestFixtures.hoursAfterOrigin(5)));
+        TreeFixtures.demoGeneratedTree(workbench.resolve("generated"), "26w14a");
+        assertEquals(1, run(arguments("normalize", "26w14a")));
+        assertTrue(err().contains("exclusion list"), err());
+    }
+
+    @Test
+    void publishNormalizesWhenNeededThenCommitsOnlyTheVersionFolderInTheDataRepository() {
+        assumeTrue(GitFixtures.gitAvailable(), "git is not available on this machine");
+        publishDemoReleaseWithItsCandidateAndPreviousRelease();
+        TreeFixtures.demoGeneratedTree(workbench.resolve("generated"), "99.1");
+        Path repository = GitFixtures.initRepository(base.resolve("data-repository"));
+        int exit = run(routingGitToTheRealOne(), "publish", "99.1", "--workbench=" + workbench, "--manifest-url=" + server.uri("/manifest"), "--data", repository.toString());
+        assertEquals("", err());
+        assertEquals(0, exit);
+        assertTrue(out().contains("normalized 99.1"), out());
+        assertTrue(out().contains("published 99.1"), out());
+        assertTrue(out().contains("pushed      no"), out());
+        assertEquals("data: 99.1", GitFixtures.run(repository, "log", "-1", "--pretty=%B").strip());
+        assertEquals(List.of("versions/99.1/data/demo/recipe/thing.json", "versions/99.1/data/minecraft/datapacks/demo_pack/pack.mcmeta",
+                "versions/99.1/meta.json", "versions/99.1/reports/gadgets.json", "versions/99.1/reports/minecraft/components/item/demo_lamp.json"),
+                GitFixtures.run(repository, "diff-tree", "--root", "--no-commit-id", "--name-only", "-r", "HEAD").lines().sorted().toList());
+        assertEquals(TreeFixtures.read(workbench.resolve("normalized/99.1/meta.json")), TreeFixtures.read(repository.resolve("versions/99.1/meta.json")));
+    }
+
+    @Test
+    void publishUsesTheNormalizedFolderThatIsAlreadyThereWithoutTouchingTheNetwork() {
+        assumeTrue(GitFixtures.gitAvailable(), "git is not available on this machine");
+        publishDemoReleaseWithItsCandidateAndPreviousRelease();
+        TreeFixtures.demoGeneratedTree(workbench.resolve("generated"), "99.1");
+        assertEquals(0, run(arguments("normalize", "99.1")));
+        int manifestHits = server.hits("/manifest");
+        outBytes.reset();
+        Path repository = GitFixtures.initRepository(base.resolve("data-repository"));
+        assertEquals(0, run(routingGitToTheRealOne(), "publish", "99.1", "--workbench=" + workbench, "--data=" + repository));
+        assertEquals(manifestHits, server.hits("/manifest"));
+        assertFalse(out().contains("normalized 99.1"), out());
+        assertEquals("data: 99.1", GitFixtures.run(repository, "log", "-1", "--pretty=%B").strip());
+    }
+
+    @Test
+    void publishRefusesARepositoryWithoutTheAttributesBeforeNormalizingAnything() {
+        assumeTrue(GitFixtures.gitAvailable(), "git is not available on this machine");
+        publishDemoReleaseWithItsCandidateAndPreviousRelease();
+        TreeFixtures.demoGeneratedTree(workbench.resolve("generated"), "99.1");
+        Path repository = GitFixtures.initRepository(base.resolve("data-repository"), false);
+        assertEquals(1, run(routingGitToTheRealOne(), "publish", "99.1", "--workbench=" + workbench, "--manifest-url=" + server.uri("/manifest"), "--data=" + repository));
+        assertTrue(err().contains("versions/** -text"), err());
+        assertEquals(0, server.hits("/manifest"));
+        assertFalse(Files.exists(workbench.resolve("normalized")));
+        assertFalse(Files.exists(repository.resolve("versions")));
+    }
+
+    @Test
+    void publishToAFolderThatIsNotARepositoryExitsWithOne() throws IOException {
+        assumeTrue(GitFixtures.gitAvailable(), "git is not available on this machine");
+        publishDemoReleaseWithItsCandidateAndPreviousRelease();
+        Path plain = Files.createDirectories(base.resolve("plain"));
+        assertEquals(1, run(routingGitToTheRealOne(), "publish", "99.1", "--workbench=" + workbench, "--manifest-url=" + server.uri("/manifest"), "--data=" + plain));
+        assertTrue(err().contains("not a git repository"), err());
     }
 }

@@ -77,14 +77,14 @@ class PipelineConfigReaderTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"fetch", "extract"})
+    @ValueSource(strings = {"fetch", "extract", "normalize", "publish"})
     void commandWithoutAVersionIdIsAUsageError(String command) {
         UsageException failure = assertThrows(UsageException.class, () -> reader.read(new String[] {command}));
         assertTrue(failure.getMessage().contains("needs a version id"), failure.getMessage());
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"fetch", "extract"})
+    @ValueSource(strings = {"fetch", "extract", "normalize", "publish"})
     void optionWhereTheVersionIdShouldBeIsAUsageError(String command) {
         assertThrows(UsageException.class, () -> reader.read(new String[] {command, "--workbench=x"}));
     }
@@ -97,7 +97,7 @@ class PipelineConfigReaderTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"--limit=3", "extra", "--manifest-url", "-manifest-url=http://127.0.0.1/x", "--workbench", "--java"})
+    @ValueSource(strings = {"--limit=3", "extra", "-manifest-url=http://127.0.0.1/x", "--data-dir=x"})
     void unknownArgumentAfterTheCommandIsAUsageError(String argument) {
         UsageException failure = assertThrows(UsageException.class, () -> reader.read(new String[] {"list", argument}));
         assertTrue(failure.getMessage().contains("Unknown argument"), failure.getMessage());
@@ -125,5 +125,55 @@ class PipelineConfigReaderTest {
     void blankWorkbenchOrJavaOptionIsAUsageError() {
         assertThrows(UsageException.class, () -> reader.read(new String[] {"list", "--workbench="}));
         assertThrows(UsageException.class, () -> reader.read(new String[] {"list", "--java=  "}));
+    }
+
+    @Test
+    void normalizeTakesAVersionId() {
+        PipelineConfig config = reader.read(new String[] {"normalize", "26.3"});
+        assertEquals(new Command.Normalize(new VersionId("26.3")), config.command());
+        assertEquals(Path.of("git"), config.git());
+    }
+
+    @Test
+    void publishNeedsADataRepositoryGivenWithEqualsOrWithASpace() {
+        Path expected = ENVIRONMENT.currentDirectory().resolve("data-repo");
+        assertEquals(new Command.Publish(new VersionId("26.3"), expected), reader.read(new String[] {"publish", "26.3", "--data=data-repo"}).command());
+        assertEquals(new Command.Publish(new VersionId("26.3"), expected), reader.read(new String[] {"publish", "26.3", "--data", "data-repo"}).command());
+        Path absolute = BASE.resolve("elsewhere").resolve("repo");
+        assertEquals(new Command.Publish(new VersionId("26.3"), absolute), reader.read(new String[] {"publish", "26.3", "--data", absolute.toString()}).command());
+    }
+
+    @Test
+    void publishWithoutTheDataOptionIsAUsageError() {
+        UsageException failure = assertThrows(UsageException.class, () -> reader.read(new String[] {"publish", "26.3"}));
+        assertTrue(failure.getMessage().contains("--data"), failure.getMessage());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"list", "fetch 26.3", "extract 26.3", "normalize 26.3"})
+    void dataOptionOnAnotherCommandIsAUsageError(String command) {
+        String[] words = (command + " --data=x").split(" ");
+        UsageException failure = assertThrows(UsageException.class, () -> reader.read(words));
+        assertTrue(failure.getMessage().contains("only for the command publish"), failure.getMessage());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"--manifest-url", "--workbench", "--java", "--data"})
+    void optionWithoutAValueIsAUsageErrorSayingSo(String option) {
+        UsageException failure = assertThrows(UsageException.class, () -> reader.read(new String[] {"publish", "26.3", option}));
+        assertTrue(failure.getMessage().contains("needs a value"), failure.getMessage());
+    }
+
+    @Test
+    void optionFollowedByAnotherOptionHasNoValue() {
+        assertThrows(UsageException.class, () -> reader.read(new String[] {"publish", "26.3", "--data", "--workbench=x"}));
+    }
+
+    @Test
+    void spacedFormWorksForEveryOption() {
+        PipelineConfig config = reader.read(new String[] {"fetch", "26.3", "--workbench", "bench", "--java", "java", "--manifest-url", "http://127.0.0.1:8080/m"});
+        assertEquals(ENVIRONMENT.currentDirectory().resolve("bench"), config.workbench());
+        assertEquals(Path.of("java"), config.java());
+        assertEquals(URI.create("http://127.0.0.1:8080/m"), config.manifestUrl());
     }
 }
