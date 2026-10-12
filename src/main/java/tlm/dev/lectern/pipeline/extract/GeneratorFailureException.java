@@ -18,19 +18,19 @@ public final class GeneratorFailureException extends PipelineException {
         super(message, cause);
     }
 
-    public static GeneratorFailureException exited(VersionId id, Path output, ProcessOutcome.Exited outcome) {
+    public static GeneratorFailureException exited(VersionId id, Path draft, ProcessOutcome.Exited outcome) {
         return new GeneratorFailureException("Version " + id.value() + ": the data generator exited with code " + outcome.exitCode()
-                + ". The folder " + output + " was left as it is" + tails(outcome));
+                + ". The draft folder " + draft + " was left as it is, the next extraction of this version replaces it" + tails(outcome));
     }
 
-    public static GeneratorFailureException timedOut(VersionId id, Path output, ProcessOutcome.TimedOut outcome) {
+    public static GeneratorFailureException timedOut(VersionId id, Path draft, ProcessOutcome.TimedOut outcome) {
         return new GeneratorFailureException("Version " + id.value() + ": the data generator did not finish within "
-                + outcome.timeout().toSeconds() + " seconds and was stopped. The folder " + output + " was left as it is"
-                + tails(outcome));
+                + outcome.timeout().toSeconds() + " seconds and was stopped. The draft folder " + draft
+                + " was left as it is, the next extraction of this version replaces it" + tails(outcome));
     }
 
-    public static GeneratorFailureException noOutput(VersionId id, Path output) {
-        return new GeneratorFailureException("Version " + id.value() + ": the data generator exited with code 0 but wrote no folder " + output);
+    public static GeneratorFailureException noOutput(VersionId id, Path draft) {
+        return new GeneratorFailureException("Version " + id.value() + ": the data generator exited with code 0 but wrote no folder " + draft);
     }
 
     public static GeneratorFailureException notStarted(VersionId id, ProcessLaunchException cause) {

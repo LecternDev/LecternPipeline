@@ -2,17 +2,17 @@ package tlm.dev.lectern.pipeline.extract;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.nio.file.FileVisitResult;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
-import java.nio.file.SimpleFileVisitor;
-import java.nio.file.attribute.BasicFileAttributes;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
+import tlm.dev.lectern.pipeline.files.DraftFolders;
+import tlm.dev.lectern.pipeline.files.FolderDeleter;
 import tlm.dev.lectern.pipeline.model.VersionId;
 import tlm.dev.lectern.pipeline.process.ProcessLaunchException;
 import tlm.dev.lectern.pipeline.process.ProcessLauncher;
@@ -36,7 +36,7 @@ public final class ExtractionService {
     }
 
     public void requireFreshOutput(VersionId id) {
-        Path output = settings.generatedRoot().resolve(id.value());
+        Path output = outputOf(id);
         if (Files.exists(output, LinkOption.NOFOLLOW_LINKS)) {
             throw new OutputExistsException(id, output);
         }
@@ -44,23 +44,33 @@ public final class ExtractionService {
 
     public ExtractionResult extract(VersionId id, Path jar) {
         requireFreshOutput(id);
-        Path output = settings.generatedRoot().resolve(id.value());
+        Path output = outputOf(id);
+        Path draft = draftOf(id);
         JarEra era = detector.detect(jar);
-        List<String> command = GeneratorCommandPlanner.plan(era, settings.java(), jar.toAbsolutePath(), output.toAbsolutePath());
+        List<String> command = GeneratorCommandPlanner.plan(era, settings.java(), jar.toAbsolutePath(), draft.toAbsolutePath());
         ensureFolder(settings.generatedRoot());
+        removeDraft(draft);
         Path workFolder = newWorkFolder();
         try {
             Instant start = clock.instant();
             ProcessOutcome outcome = launch(id, command, workFolder);
             Duration duration = Duration.between(start, clock.instant());
             return switch (outcome) {
-                case ProcessOutcome.Exited exited when exited.exitCode() == 0 -> result(id, output, duration);
-                case ProcessOutcome.Exited exited -> throw GeneratorFailureException.exited(id, output, exited);
-                case ProcessOutcome.TimedOut timedOut -> throw GeneratorFailureException.timedOut(id, output, timedOut);
+                case ProcessOutcome.Exited exited when exited.exitCode() == 0 -> result(id, draft, output, duration);
+                case ProcessOutcome.Exited exited -> throw GeneratorFailureException.exited(id, draft, exited);
+                case ProcessOutcome.TimedOut timedOut -> throw GeneratorFailureException.timedOut(id, draft, timedOut);
             };
         } finally {
             deleteWorkFolder(workFolder);
         }
+    }
+
+    private Path outputOf(VersionId id) {
+        return settings.generatedRoot().resolve(id.value());
+    }
+
+    private Path draftOf(VersionId id) {
+        return DraftFolders.draftOf(outputOf(id));
     }
 
     private ProcessOutcome launch(VersionId id, List<String> command, Path workFolder) {
@@ -71,11 +81,26 @@ public final class ExtractionService {
         }
     }
 
-    private ExtractionResult result(VersionId id, Path output, Duration duration) {
-        if (!Files.isDirectory(output)) {
-            throw GeneratorFailureException.noOutput(id, output);
+    private ExtractionResult result(VersionId id, Path draft, Path output, Duration duration) {
+        if (!Files.isDirectory(draft)) {
+            throw GeneratorFailureException.noOutput(id, draft);
+        }
+        try {
+            DraftFolders.promote(draft, output);
+        } catch (FileAlreadyExistsException exception) {
+            throw new OutputExistsException(id, output);
+        } catch (IOException exception) {
+            throw new UncheckedIOException("Could not rename " + draft + " to " + output, exception);
         }
         return new ExtractionResult(id, output, new TreeSummarizer().summarize(output), duration);
+    }
+
+    private static void removeDraft(Path draft) {
+        try {
+            DraftFolders.clear(draft);
+        } catch (IOException exception) {
+            throw new UncheckedIOException("Could not replace the draft " + draft + " left by a previous extraction", exception);
+        }
     }
 
     private Path newWorkFolder() {
@@ -97,19 +122,7 @@ public final class ExtractionService {
 
     private static void deleteWorkFolder(Path folder) {
         try {
-            Files.walkFileTree(folder, new SimpleFileVisitor<>() {
-                @Override
-                public FileVisitResult visitFile(Path file, BasicFileAttributes attributes) throws IOException {
-                    Files.delete(file);
-                    return FileVisitResult.CONTINUE;
-                }
-
-                @Override
-                public FileVisitResult postVisitDirectory(Path directory, IOException failure) throws IOException {
-                    Files.delete(directory);
-                    return FileVisitResult.CONTINUE;
-                }
-            });
+            FolderDeleter.deleteTree(folder);
         } catch (IOException exception) {
             LOGGER.log(System.Logger.Level.WARNING, "Could not delete the work folder " + folder + ": " + exception);
         }

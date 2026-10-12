@@ -1,5 +1,11 @@
 package tlm.dev.lectern.pipeline.extract;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -16,12 +22,6 @@ import tlm.dev.lectern.pipeline.fixtures.SteppingClock;
 import tlm.dev.lectern.pipeline.model.VersionId;
 import tlm.dev.lectern.pipeline.process.ProcessLaunchException;
 import tlm.dev.lectern.pipeline.process.ProcessOutcome;
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-
 
 class ExtractionServiceTest {
 
@@ -64,7 +64,7 @@ class ExtractionServiceTest {
         ExtractionResult result = service(launcher).extract(ID, jar);
         FakeLauncher.Call call = launcher.calls().get(0);
         assertEquals(
-                GeneratorCommandPlanner.plan(new JarEra.Bundler(), JAVA, jar.toAbsolutePath(), generatedRoot.resolve("99.1").toAbsolutePath()),
+                GeneratorCommandPlanner.plan(new JarEra.Bundler(), JAVA, jar.toAbsolutePath(), generatedRoot.resolve("99.1.partial").toAbsolutePath()),
                 call.command());
         assertEquals(TIMEOUT, call.timeout());
         assertEquals(generatedRoot.resolve("99.1"), result.output());
@@ -146,7 +146,9 @@ class ExtractionServiceTest {
         assertTrue(failure.getMessage().contains("invented boom"), failure.getMessage());
         assertTrue(failure.getMessage().contains("generator log line"), failure.getMessage());
         assertTrue(failure.getMessage().contains("left as it is"), failure.getMessage());
-        assertTrue(Files.exists(generatedRoot.resolve("99.1").resolve("reports/partial.json")));
+        assertTrue(failure.getMessage().contains("99.1.partial"), failure.getMessage());
+        assertFalse(Files.exists(generatedRoot.resolve("99.1")));
+        assertTrue(Files.exists(generatedRoot.resolve("99.1.partial").resolve("reports/partial.json")));
         assertEquals(List.of(), scratchContent());
     }
 
@@ -206,6 +208,105 @@ class ExtractionServiceTest {
         assertFalse(Files.exists(generatedRoot));
         service(FakeLauncher.writingFiles("reports/blocks.json")).extract(ID, jar);
         assertTrue(Files.isDirectory(generatedRoot));
+    }
+
+    @Test
+    void generatorWritesIntoTheDraftAndTheFinalFolderOnlyAppearsOnSuccess() {
+        JarFixtures.bundlerJar(jar);
+        FakeLauncher launcher = new FakeLauncher(call -> {
+            Path draft = FakeLauncher.outputOf(call.command());
+            assertEquals(generatedRoot.resolve("99.1.partial"), draft);
+            assertFalse(Files.exists(generatedRoot.resolve("99.1")), "the final folder must not exist while the generator runs");
+            FakeLauncher.write(draft.resolve("reports/blocks.json"), 4);
+            return new ProcessOutcome.Exited(0, "", "");
+        });
+        service(launcher).extract(ID, jar);
+        assertTrue(Files.isRegularFile(generatedRoot.resolve("99.1").resolve("reports/blocks.json")));
+        assertFalse(Files.exists(generatedRoot.resolve("99.1.partial")));
+    }
+
+    @Test
+    void failureHalfwayLeavesNoFinalFolderOnlyTheDraft() throws IOException {
+        JarFixtures.bundlerJar(jar);
+        FakeLauncher launcher = new FakeLauncher(call -> {
+            FakeLauncher.write(FakeLauncher.outputOf(call.command()).resolve("reports/half.json"), 2);
+            return new ProcessOutcome.Exited(1, "", "boom");
+        });
+        assertThrows(GeneratorFailureException.class, () -> service(launcher).extract(ID, jar));
+        assertFalse(Files.exists(generatedRoot.resolve("99.1")));
+        assertTrue(Files.exists(generatedRoot.resolve("99.1.partial").resolve("reports/half.json")));
+        assertEquals(List.of(), scratchContent());
+    }
+
+    @Test
+    void timeoutAndLaunchFailureAlsoLeaveNoFinalFolder() {
+        JarFixtures.bundlerJar(jar);
+        FakeLauncher slow = new FakeLauncher(call -> {
+            FakeLauncher.write(FakeLauncher.outputOf(call.command()).resolve("reports/half.json"), 2);
+            return new ProcessOutcome.TimedOut(TIMEOUT, "", "");
+        });
+        assertThrows(GeneratorFailureException.class, () -> service(slow).extract(ID, jar));
+        assertFalse(Files.exists(generatedRoot.resolve("99.1")));
+        FakeLauncher broken = new FakeLauncher(call -> {
+            throw new ProcessLaunchException("Could not start jdk/bin/java: not found", new IOException("not found"));
+        });
+        assertThrows(GeneratorFailureException.class, () -> service(broken).extract(ID, jar));
+        assertFalse(Files.exists(generatedRoot.resolve("99.1")));
+    }
+
+    @Test
+    void nextExtractionReplacesTheDraftOfAFailedOne() throws IOException {
+        JarFixtures.bundlerJar(jar);
+        FakeLauncher failing = new FakeLauncher(call -> {
+            FakeLauncher.write(FakeLauncher.outputOf(call.command()).resolve("stale/old.json"), 7);
+            return new ProcessOutcome.Exited(1, "", "boom");
+        });
+        assertThrows(GeneratorFailureException.class, () -> service(failing).extract(ID, jar));
+        assertTrue(Files.exists(generatedRoot.resolve("99.1.partial").resolve("stale/old.json")));
+        FakeLauncher working = new FakeLauncher(call -> {
+            assertFalse(Files.exists(FakeLauncher.outputOf(call.command())), "the draft of the failed run must be gone before the generator starts");
+            FakeLauncher.write(FakeLauncher.outputOf(call.command()).resolve("reports/new.json"), 3);
+            return new ProcessOutcome.Exited(0, "", "");
+        });
+        ExtractionResult result = service(working).extract(ID, jar);
+        assertEquals(1, result.summary().files());
+        assertTrue(Files.isRegularFile(generatedRoot.resolve("99.1").resolve("reports/new.json")));
+        assertFalse(Files.exists(generatedRoot.resolve("99.1").resolve("stale")));
+        assertFalse(Files.exists(generatedRoot.resolve("99.1.partial")));
+    }
+
+    @Test
+    void draftThatIsAPlainFileIsReplacedToo() throws IOException {
+        JarFixtures.bundlerJar(jar);
+        Files.createDirectories(generatedRoot);
+        Files.write(generatedRoot.resolve("99.1.partial"), new byte[] {1});
+        service(FakeLauncher.writingFiles("reports/blocks.json")).extract(ID, jar);
+        assertTrue(Files.isDirectory(generatedRoot.resolve("99.1")));
+    }
+
+    @Test
+    void finishedFolderIsNeverTouchedEvenWhenADraftExists() throws IOException {
+        JarFixtures.bundlerJar(jar);
+        FakeLauncher.write(generatedRoot.resolve("99.1").resolve("reports/done.json"), 5);
+        FakeLauncher.write(generatedRoot.resolve("99.1.partial").resolve("draft.json"), 6);
+        FakeLauncher launcher = FakeLauncher.writingFiles("reports/other.json");
+        assertThrows(OutputExistsException.class, () -> service(launcher).extract(ID, jar));
+        assertEquals(List.of(), launcher.calls());
+        assertArrayEquals(new byte[5], Files.readAllBytes(generatedRoot.resolve("99.1").resolve("reports/done.json")));
+        assertTrue(Files.exists(generatedRoot.resolve("99.1.partial").resolve("draft.json")));
+    }
+
+    @Test
+    void finishedFolderAppearingDuringTheRunIsNotReplaced() throws IOException {
+        JarFixtures.bundlerJar(jar);
+        FakeLauncher launcher = new FakeLauncher(call -> {
+            FakeLauncher.write(FakeLauncher.outputOf(call.command()).resolve("reports/blocks.json"), 4);
+            FakeLauncher.write(generatedRoot.resolve("99.1").resolve("reports/other.json"), 9);
+            return new ProcessOutcome.Exited(0, "", "");
+        });
+        assertThrows(OutputExistsException.class, () -> service(launcher).extract(ID, jar));
+        assertArrayEquals(new byte[9], Files.readAllBytes(generatedRoot.resolve("99.1").resolve("reports/other.json")));
+        assertFalse(Files.exists(generatedRoot.resolve("99.1").resolve("reports/blocks.json")));
     }
 
     @Test
