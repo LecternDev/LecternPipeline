@@ -17,11 +17,16 @@ public final class VersionLookupService {
     }
 
     public TrackedVersion find(VersionId id) {
-        return findWithBase(id).version();
+        return locate(reader.read(source.fetchManifest()), id);
     }
 
     public LookedUpVersion findWithBase(VersionId id) {
         List<ManifestEntry> entries = reader.read(source.fetchManifest());
+        TrackedVersion version = locate(entries, id);
+        return new LookedUpVersion(version, scope.plannerFor(scope.track(entries)).baseOf(version));
+    }
+
+    private TrackedVersion locate(List<ManifestEntry> entries, VersionId id) {
         ManifestEntry entry = entries.stream()
                 .filter(candidate -> candidate.id().equals(id))
                 .findFirst()
@@ -30,7 +35,6 @@ public final class VersionLookupService {
             throw VersionOutOfScopeException.excluded(id);
         }
         VersionForm form = scope.formOf(id).orElseThrow(() -> VersionOutOfScopeException.unknownShape(id));
-        TrackedVersion version = new TrackedVersion(entry, form);
-        return new LookedUpVersion(version, new DiffBasePlanner(scope.track(entries)).baseOf(version));
+        return new TrackedVersion(entry, form);
     }
 }

@@ -9,6 +9,7 @@ import java.util.stream.Stream;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import tlm.dev.lectern.pipeline.model.VersionId;
 
 class VersionFormParserTest {
@@ -89,12 +90,37 @@ class VersionFormParserTest {
                 "snapshot");
     }
 
+    static Stream<Arguments> oldNamingLines() {
+        return Stream.of(
+                Arguments.of("1.21.11", new ReleaseLine(1, 21, 11)),
+                Arguments.of("1.21", new ReleaseLine(1, 21, 0)),
+                Arguments.of("1.0", new ReleaseLine(1, 0, 0)),
+                Arguments.of("1.7.10", new ReleaseLine(1, 7, 10)),
+                Arguments.of("1.21.11-rc3", new ReleaseLine(1, 21, 11)),
+                Arguments.of("1.21-rc1", new ReleaseLine(1, 21, 0)),
+                Arguments.of("1.20.5-pre4", new ReleaseLine(1, 20, 5)),
+                Arguments.of("1.21-pre1", new ReleaseLine(1, 21, 0)));
+    }
+
     @ParameterizedTest
     @MethodSource("oldNamingForms")
-    void oldNamingIdGivesItsKindAndNoReleaseLine(String id, String label) {
+    void oldNamingIdGivesItsKind(String id, String label) {
         VersionForm form = VersionFormParser.parse(new VersionId(id)).orElseThrow();
         assertInstanceOf(VersionForm.OldNaming.class, form);
         assertEquals(label, form.kind().label());
+    }
+
+    @ParameterizedTest
+    @MethodSource("oldNamingLines")
+    void oldNamingReleaseCandidateAndPreReleaseCarryTheLineOfTheReleaseTheyLeadTo(String id, ReleaseLine line) {
+        assertEquals(Optional.of(line), VersionFormParser.parse(new VersionId(id)).orElseThrow().releaseLine());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"25w46a", "13w01a", "17w13b", "24w14a"})
+    void oldNamingSnapshotHasNoLineInItsId(String id) {
+        VersionForm form = VersionFormParser.parse(new VersionId(id)).orElseThrow();
+        assertInstanceOf(VersionForm.OldNaming.class, form);
         assertTrue(form.releaseLine().isEmpty());
     }
 

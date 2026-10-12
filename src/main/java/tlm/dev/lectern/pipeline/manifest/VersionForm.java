@@ -10,15 +10,16 @@ public sealed interface VersionForm {
 
     Optional<ReleaseLine> releaseLine();
 
-    record OldNaming(VersionKind kind) implements VersionForm {
+    record OldNaming(VersionKind kind, Optional<ReleaseLine> line) implements VersionForm {
 
         public OldNaming {
             Objects.requireNonNull(kind, "kind");
+            Objects.requireNonNull(line, "line");
         }
 
         @Override
         public Optional<ReleaseLine> releaseLine() {
-            return Optional.empty();
+            return line;
         }
     }
 

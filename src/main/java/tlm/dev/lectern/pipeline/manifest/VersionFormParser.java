@@ -11,13 +11,18 @@ public final class VersionFormParser {
 
     private static final String NUMBER = "(0|[1-9][0-9]{0,3})";
     private static final String COUNTER = "[1-9][0-9]{0,3}";
-    private static final String OLD_RELEASE = "1\\.(?:0|[1-9][0-9]{0,3})(?:\\.(?:0|[1-9][0-9]{0,3}))?";
+    private static final String OLD_RELEASE = "1\\.(0|[1-9][0-9]{0,3})(?:\\.(0|[1-9][0-9]{0,3}))?";
+    private static final int OLD_MAJOR = 1;
     private static final String NEW_RELEASE = "([0-9]{2})\\." + NUMBER + "(?:\\." + NUMBER + ")?";
 
-    private record Form(Pattern pattern, VersionKind kind) {
+    private record Form(Pattern pattern, VersionKind kind, boolean carriesLine) {
 
         static Form of(String regex, VersionKind kind) {
-            return new Form(Pattern.compile(regex), kind);
+            return new Form(Pattern.compile(regex), kind, true);
+        }
+
+        static Form withoutLine(String regex, VersionKind kind) {
+            return new Form(Pattern.compile(regex), kind, false);
         }
     }
 
@@ -25,7 +30,7 @@ public final class VersionFormParser {
             Form.of(OLD_RELEASE, new VersionKind.Release()),
             Form.of(OLD_RELEASE + "-rc" + COUNTER, new VersionKind.ReleaseCandidate()),
             Form.of(OLD_RELEASE + "-pre" + COUNTER, new VersionKind.PreRelease()),
-            Form.of("[0-9]{2}w[0-9]{2}[a-z]", new VersionKind.Snapshot()));
+            Form.withoutLine("[0-9]{2}w[0-9]{2}[a-z]", new VersionKind.Snapshot()));
 
     private static final List<Form> NEW_FORMS = List.of(
             Form.of(NEW_RELEASE, new VersionKind.Release()),
@@ -53,11 +58,17 @@ public final class VersionFormParser {
 
     private static Optional<VersionForm> parseOldNaming(String value) {
         for (Form form : OLD_FORMS) {
-            if (form.pattern().matcher(value).matches()) {
-                return Optional.of(new VersionForm.OldNaming(form.kind()));
+            Matcher matcher = form.pattern().matcher(value);
+            if (matcher.matches()) {
+                return Optional.of(new VersionForm.OldNaming(form.kind(), form.carriesLine() ? Optional.of(oldLineOf(matcher)) : Optional.empty()));
             }
         }
         return Optional.empty();
+    }
+
+    private static ReleaseLine oldLineOf(Matcher matcher) {
+        String patch = matcher.group(2);
+        return new ReleaseLine(OLD_MAJOR, Integer.parseInt(matcher.group(1)), patch == null ? 0 : Integer.parseInt(patch));
     }
 
     private static ReleaseLine lineOf(Matcher matcher) {

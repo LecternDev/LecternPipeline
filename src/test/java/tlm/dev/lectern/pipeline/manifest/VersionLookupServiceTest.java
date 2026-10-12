@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.Optional;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 import tlm.dev.lectern.pipeline.fixtures.ManifestFixtures;
@@ -56,5 +57,37 @@ class VersionLookupServiceTest {
         VersionLookupService broken = new VersionLookupService(
                 () -> "{}", new ManifestReader(new JsonTextReader()), new VersionScope(Set.of()));
         assertThrows(ManifestFormatException.class, () -> broken.find(new VersionId("99.1")));
+    }
+
+    @Test
+    void lookupWithoutBasesDoesNotNeedTheStartOfTheHistoryToExist() {
+        VersionLookupService unreachableStart = new VersionLookupService(
+                () -> MANIFEST, new ManifestReader(new JsonTextReader()), new VersionScope(Set.of(), Optional.of(new VersionId("1.20.4"))));
+        assertEquals("99.1", unreachableStart.find(new VersionId("99.1")).id().value());
+    }
+
+    @Test
+    void lookupWithBasesNeedsTheStartOfTheHistoryToExist() {
+        VersionLookupService unreachableStart = new VersionLookupService(
+                () -> MANIFEST, new ManifestReader(new JsonTextReader()), new VersionScope(Set.of(), Optional.of(new VersionId("1.20.4"))));
+        assertThrows(HistoryStartNotFoundException.class, () -> unreachableStart.findWithBase(new VersionId("99.1")));
+    }
+
+    @Test
+    void basesBeforeTheStartOfTheHistoryAreNone() {
+        VersionLookupService fromTheCandidate = new VersionLookupService(
+                () -> MANIFEST, new ManifestReader(new JsonTextReader()), new VersionScope(Set.of(), Optional.of(new VersionId("99.1-rc-1"))));
+        assertEquals(DiffBase.none(), fromTheCandidate.findWithBase(new VersionId("99.1-rc-1")).base());
+        assertEquals(new DiffBase(Optional.of(new VersionId("99.1-rc-1")), Optional.empty()), fromTheCandidate.findWithBase(new VersionId("99.1")).base());
+    }
+
+    @Test
+    void oldNamingVersionHasBasesToo() {
+        String manifest = ManifestFixtures.manifestJson(
+                ManifestFixtures.entryJson("1.21", "release", ManifestFixtures.hoursAfterOrigin(30)),
+                ManifestFixtures.entryJson("1.21-rc1", "snapshot", ManifestFixtures.hoursAfterOrigin(20)),
+                ManifestFixtures.entryJson("1.20.6", "release", ManifestFixtures.hoursAfterOrigin(10)));
+        VersionLookupService old = new VersionLookupService(() -> manifest, new ManifestReader(new JsonTextReader()), new VersionScope(Set.of()));
+        assertEquals(new DiffBase(Optional.of(new VersionId("1.21-rc1")), Optional.of(new VersionId("1.20.6"))), old.findWithBase(new VersionId("1.21")).base());
     }
 }

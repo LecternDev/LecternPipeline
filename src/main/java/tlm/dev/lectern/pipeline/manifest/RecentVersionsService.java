@@ -20,7 +20,7 @@ public final class RecentVersionsService {
             throw new IllegalArgumentException("The number of versions to list must be at least 1: " + count);
         }
         List<TrackedVersion> tracked = scope.track(reader.read(source.fetchManifest()));
-        DiffBasePlanner planner = new DiffBasePlanner(tracked);
+        DiffBasePlanner planner = scope.plannerFor(tracked);
         return tracked.stream()
                 .limit(count)
                 .map(version -> new ListedVersion(version, planner.baseOf(version)))

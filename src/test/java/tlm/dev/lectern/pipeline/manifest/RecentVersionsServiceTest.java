@@ -70,4 +70,25 @@ class RecentVersionsServiceTest {
                 new VersionScope(Set.of()));
         assertThrows(ManifestFormatException.class, () -> broken.recent(1));
     }
+
+    @Test
+    void basesBeforeTheStartOfTheHistoryAreNoneInTheList() {
+        RecentVersionsService fromTheCandidate = new RecentVersionsService(
+                () -> MANIFEST,
+                new ManifestReader(new JsonTextReader()),
+                new VersionScope(Set.of(new VersionId("99w14a")), Optional.of(new VersionId("99.1-rc-1"))));
+        List<ListedVersion> listed = fromTheCandidate.recent(10);
+        assertEquals(new DiffBase(Optional.of(new VersionId("99.1-rc-1")), Optional.empty()), listed.get(1).base());
+        assertEquals(DiffBase.none(), listed.get(2).base());
+        assertEquals(DiffBase.none(), listed.get(3).base());
+    }
+
+    @Test
+    void startMissingFromTheManifestIsReported() {
+        RecentVersionsService missing = new RecentVersionsService(
+                () -> MANIFEST,
+                new ManifestReader(new JsonTextReader()),
+                new VersionScope(Set.of(), Optional.of(new VersionId("1.20.4"))));
+        assertThrows(HistoryStartNotFoundException.class, () -> missing.recent(1));
+    }
 }
